@@ -1,14 +1,9 @@
-import { Navigate, Outlet } from "react-router-dom";
-import { useAuthStore } from "@/store/authStore";
+import { Outlet } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 
+// Auth temporarily bypassed — all routes are accessible without login.
+// Re-enable by wrapping with isAuthenticated check when auth is added back.
 export function ProtectedRoute() {
-  const { isAuthenticated } = useAuthStore();
-
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-
   return (
     <AppLayout>
       <Outlet />

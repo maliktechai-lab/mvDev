@@ -1,7 +1,6 @@
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Shield, UploadCloud, Clock, LayoutDashboard, LogOut, Settings, User } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
+import { Shield, UploadCloud, Clock, LayoutDashboard, Settings, User } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
-import toast from "react-hot-toast";
 import { clsx } from "clsx";
 
 const navItems = [
@@ -13,14 +12,7 @@ const navItems = [
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const navigate = useNavigate();
-  const { user, logout } = useAuthStore();
-
-  const handleLogout = async () => {
-    await logout();
-    toast.success("Logged out");
-    navigate("/login");
-  };
+  const { user } = useAuthStore();
 
   return (
     <div className="flex h-screen bg-gray-950">
@@ -60,16 +52,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               <User className="h-4 w-4 text-brand-400" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-gray-100">{user?.username ?? "User"}</p>
-              <p className="truncate text-xs text-gray-500">{user?.email ?? ""}</p>
+              <p className="truncate text-sm font-medium text-gray-100">
+                {user?.username ?? "Guest"}
+              </p>
+              <p className="truncate text-xs text-gray-500">
+                {user?.email ?? "Login coming soon"}
+              </p>
             </div>
-            <button
-              onClick={handleLogout}
-              title="Logout"
-              className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-800 hover:text-gray-300"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
           </div>
         </div>
       </aside>
