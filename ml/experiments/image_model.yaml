@@ -1,0 +1,65 @@
+# DeepGuard-Image Training Configuration
+# Run with: python backend/training/train_image.py --config ml/experiments/image_model.yaml
+
+experiment_name: deepguard_image_v1
+description: "EfficientNet-B4 with 3-branch spatial/frequency/attention architecture"
+
+# Dataset
+dataset:
+  root: ml/datasets/processed
+  max_per_class: null           # null = use all; set e.g. 5000 for quick runs
+
+# Model
+model:
+  pretrained: true
+  backbone: efficientnet_b4
+  branch_dim: 512
+
+# Training
+training:
+  epochs: 30
+  batch_size: 32
+  num_workers: 4
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  patience: 7                   # Early stopping patience
+  mixed_precision: true         # AMP (GPU only)
+
+# Optimizer
+optimizer:
+  type: AdamW
+  backbone_lr_multiplier: 0.1  # Backbone gets 10x lower LR than new heads
+
+# Scheduler
+scheduler:
+  type: CosineAnnealingLR
+  T_max: 30
+  eta_min: 0.000001
+
+# Loss
+loss:
+  main_weight: 1.0
+  aux_weight: 0.3               # Weight for auxiliary branch losses
+
+# Augmentation (training only)
+augmentation:
+  random_horizontal_flip: 0.5
+  color_jitter: true
+  gaussian_blur: 0.2
+  random_erasing: 0.1
+
+# Checkpointing
+checkpoint:
+  dir: ml/checkpoints
+  save_every_n_epochs: 5
+  keep_best_n: 3
+
+# Evaluation
+evaluation:
+  threshold: 0.5
+  metrics:
+    - auc_roc
+    - accuracy
+    - f1_score
+    - eer

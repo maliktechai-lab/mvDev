@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# ML checkpoints & data
+ml/checkpoints/*.pth
+ml/checkpoints/*.onnx
+ml/datasets/raw/
+ml/datasets/processed/
+
+# Uploads & media
+backend/uploads/
+backend/heatmaps/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Alembic
+backend/db/alembic.ini
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
