@@ -89,21 +89,23 @@ class ImageModelTrainer:
 
     def __init__(
         self,
-        model:           DeepGuardImageModel,
-        device:          str,
-        learning_rate:   float = 3e-4,
-        weight_decay:    float = 1e-4,
-        epochs:          int   = 50,
-        warmup_epochs:   int   = 5,
-        patience:        int   = 10,
-        checkpoint_dir:  str   = "ml/checkpoints",
-        label_smoothing: float = 0.1,
+        model:            DeepGuardImageModel,
+        device:           str,
+        learning_rate:    float = 3e-4,
+        weight_decay:     float = 1e-4,
+        epochs:           int   = 50,
+        warmup_epochs:    int   = 5,
+        patience:         int   = 10,
+        checkpoint_dir:   str   = "ml/checkpoints",
+        canonical_name:   str   = "deepguard_image.pth",
+        label_smoothing:  float = 0.1,
     ):
-        self.model          = model.to(device)
-        self.device         = device
-        self.epochs         = epochs
-        self.patience       = patience
-        self.checkpoint_dir = Path(checkpoint_dir)
+        self.model           = model.to(device)
+        self.device          = device
+        self.epochs          = epochs
+        self.patience        = patience
+        self.checkpoint_dir  = Path(checkpoint_dir)
+        self.canonical_name  = canonical_name
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.criterion = DeepSupervisionLoss(
@@ -185,11 +187,12 @@ class ImageModelTrainer:
                 "eer":      metrics.eer,
             },
         }, path)
-        # Also save as the canonical name the registry looks for
-        canonical = self.checkpoint_dir / "deepguard_image.pth"
+        # Also save as the canonical name the registry looks for (configurable via YAML checkpoint.canonical_name)
+        canonical = self.checkpoint_dir / self.canonical_name
         if tag == "best":
             import shutil
             shutil.copy2(path, canonical)
+            logger.info(f"Canonical checkpoint → {canonical}")
         logger.info(f"Checkpoint saved → {path}")
 
     # ── Full training loop ─────────────────────────────────────────────────
@@ -238,46 +241,105 @@ class ImageModelTrainer:
 
 # ── CLI entry point ────────────────────────────────────────────────────────
 
+def _load_yaml_config(path: str) -> dict:
+    """Load a YAML config file. Returns empty dict if PyYAML is unavailable."""
+    try:
+        import yaml
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    except ImportError:
+        logger.warning("PyYAML not installed — ignoring --config flag")
+        return {}
+    except FileNotFoundError:
+        logger.warning(f"Config file not found: {path} — using defaults")
+        return {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train DeepGuard-Image model from scratch")
-    parser.add_argument("--dataset_root",  default="ml/datasets/processed")
-    parser.add_argument("--epochs",        type=int,   default=50)
-    parser.add_argument("--batch_size",    type=int,   default=32)
-    parser.add_argument("--lr",            type=float, default=3e-4)
-    parser.add_argument("--weight_decay",  type=float, default=1e-4)
-    parser.add_argument("--warmup_epochs", type=int,   default=5)
-    parser.add_argument("--patience",      type=int,   default=10)
-    parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--workers",       type=int,   default=4)
+    parser.add_argument("--config",        default=None,
+                        help="Path to YAML config (e.g. ml/experiments/image_model.yaml). "
+                             "CLI flags override YAML values.")
+    parser.add_argument("--dataset_root",  default=None)
+    parser.add_argument("--epochs",        type=int,   default=None)
+    parser.add_argument("--batch_size",    type=int,   default=None)
+    parser.add_argument("--lr",            type=float, default=None)
+    parser.add_argument("--weight_decay",  type=float, default=None)
+    parser.add_argument("--warmup_epochs", type=int,   default=None)
+    parser.add_argument("--patience",      type=int,   default=None)
+    parser.add_argument("--device",        default=None)
+    parser.add_argument("--workers",       type=int,   default=None)
     parser.add_argument("--max_per_class", type=int,   default=None,
                         help="Cap samples per class — useful for quick smoke tests")
-    parser.add_argument("--checkpoint_dir", default="ml/checkpoints")
+    parser.add_argument("--checkpoint_dir",   default=None)
+    parser.add_argument("--canonical_name",   default=None,
+                        help="Canonical checkpoint filename (e.g. deepguard_image.pth)")
     args = parser.parse_args()
 
-    logger.info(f"Config: {vars(args)}")
+    # ── Merge YAML → CLI (CLI wins) ────────────────────────────────────────
+    cfg: dict = {}
+    if args.config:
+        cfg = _load_yaml_config(args.config)
+
+    def _get(cli_val, yaml_keys: list, default):
+        """Return cli_val if set, else walk yaml_keys, else default."""
+        if cli_val is not None:
+            return cli_val
+        node = cfg
+        for k in yaml_keys:
+            if isinstance(node, dict) and k in node:
+                node = node[k]
+            else:
+                return default
+        return node if node is not None else default
+
+    dataset_root  = _get(args.dataset_root,  ["dataset", "root"],                  "ml/datasets/processed")
+    epochs        = _get(args.epochs,         ["training", "epochs"],               50)
+    batch_size    = _get(args.batch_size,     ["training", "batch_size"],           32)
+    lr            = _get(args.lr,             ["training", "learning_rate"],        3e-4)
+    weight_decay  = _get(args.weight_decay,   ["training", "weight_decay"],         1e-4)
+    warmup_epochs = _get(args.warmup_epochs,  ["training", "warmup_epochs"],        5)
+    patience      = _get(args.patience,       ["training", "patience"],             10)
+    device        = _get(args.device,         [],                                   "cuda" if torch.cuda.is_available() else "cpu")
+    workers       = _get(args.workers,        ["training", "num_workers"],          4)
+    max_per_class = _get(args.max_per_class,  ["dataset", "max_per_class"],         None)
+    checkpoint_dir  = _get(args.checkpoint_dir,  ["checkpoint", "dir"],            "ml/checkpoints")
+    canonical_name  = _get(args.canonical_name,  ["checkpoint", "canonical_name"], "deepguard_image.pth")
+    label_smoothing = _get(None,                 ["training", "label_smoothing"],   0.1)
+
+    effective = dict(
+        dataset_root=dataset_root, epochs=epochs, batch_size=batch_size,
+        lr=lr, weight_decay=weight_decay, warmup_epochs=warmup_epochs,
+        patience=patience, device=device, workers=workers,
+        max_per_class=max_per_class, checkpoint_dir=checkpoint_dir,
+        canonical_name=canonical_name,
+    )
+    logger.info(f"Effective config: {effective}")
 
     # Data
     train_loader, val_loader, test_loader = build_dataloaders(
-        dataset_root=args.dataset_root,
-        batch_size=args.batch_size,
-        num_workers=args.workers,
-        max_per_class=args.max_per_class,
+        dataset_root=dataset_root,
+        batch_size=batch_size,
+        num_workers=workers,
+        max_per_class=max_per_class,
     )
 
     # Model — always from scratch
-    model = build_image_model(device=args.device)
+    model = build_image_model(device=device)
     logger.info(f"Model built from scratch — {sum(p.numel() for p in model.parameters()):,} params")
 
     # Train
     trainer = ImageModelTrainer(
         model=model,
-        device=args.device,
-        learning_rate=args.lr,
-        weight_decay=args.weight_decay,
-        epochs=args.epochs,
-        warmup_epochs=args.warmup_epochs,
-        patience=args.patience,
-        checkpoint_dir=args.checkpoint_dir,
+        device=device,
+        learning_rate=lr,
+        weight_decay=weight_decay,
+        epochs=epochs,
+        warmup_epochs=warmup_epochs,
+        patience=patience,
+        checkpoint_dir=checkpoint_dir,
+        canonical_name=canonical_name,
+        label_smoothing=label_smoothing,
     )
     trainer.train(train_loader, val_loader)
 
@@ -287,8 +349,8 @@ def main():
     model.eval()
     with torch.no_grad():
         for images, labels in test_loader:
-            images = images.to(args.device)
-            labels = labels.to(args.device)
+            images = images.to(device)
+            labels = labels.to(device)
             out    = model(images)
             probs  = F.softmax(out["logits"], dim=1)
             tracker.update(labels.cpu().tolist(), probs[:, 1].cpu().tolist(), 0.0)

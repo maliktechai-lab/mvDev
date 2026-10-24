@@ -1,4 +1,3 @@
-
 services:
 
   # ── PostgreSQL ─────────────────────────────────────────
@@ -12,6 +11,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Not exposed to host in production; internal network only.
+    # Expose only for local development debugging:
     ports:
       - "5432:5432"
     healthcheck:
@@ -28,6 +29,7 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    # Expose only for local development debugging:
     ports:
       - "6379:6379"
     healthcheck:
@@ -56,6 +58,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Inherits HEALTHCHECK from Dockerfile.backend (HTTP ping to :8000) — correct for this service.
 
   # ── Celery Worker ──────────────────────────────────────
   celery_worker:
@@ -76,6 +79,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Override the shared Dockerfile HEALTHCHECK.
+    # The worker has no HTTP server — use celery inspect ping instead.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A core.celery_app inspect ping --timeout 5 2>&1 | grep -q pong || exit 1"]
+      interval: 30s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
 
   # ── Celery Flower (monitoring) ─────────────────────────
   flower:
@@ -90,6 +101,14 @@ services:
       - "5555:5555"
     depends_on:
       - redis
+    # Override the shared Dockerfile HEALTHCHECK.
+    # Flower serves on :5555, not :8000. Use its built-in /healthcheck endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5555/healthcheck')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
 
   # ── React Frontend ─────────────────────────────────────
   frontend:

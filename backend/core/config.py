@@ -44,10 +44,13 @@ class Settings(BaseSettings):
     MAX_AUDIO_SIZE_MB: int = 50
 
     # ML Models
-    MODEL_DIR: str = "../ml/checkpoints"
-    IMAGE_MODEL_PATH: str = "../ml/checkpoints/deepguard_image.pth"
-    VIDEO_MODEL_PATH: str = "../ml/checkpoints/deepguard_video.pth"
-    AUDIO_MODEL_PATH: str = "../ml/checkpoints/deepguard_audio.pth"
+    # Docker:     /app/checkpoints/   (volume-mounted from ./ml/checkpoints)
+    # Local dev:  ./checkpoints/      (symlink or copy from ml/checkpoints)
+    # Override via .env — see .env.example for both scenarios.
+    MODEL_DIR: str = "./checkpoints"
+    IMAGE_MODEL_PATH: str = "./checkpoints/deepguard_image.pth"
+    VIDEO_MODEL_PATH: str = "./checkpoints/deepguard_video.pth"
+    AUDIO_MODEL_PATH: str = "./checkpoints/deepguard_audio.pth"
     DEVICE: str = "cpu"
 
     # Inference

@@ -21,6 +21,7 @@ from loguru import logger
 
 from core.config import settings
 from core.security import get_current_user
+from core.model_readiness import check_image_model, require_model_ready
 from db.database import get_db
 from db.models import DetectionJob, DetectionResult, JobStatus, MediaType, Verdict, User
 
@@ -31,6 +32,22 @@ ALLOWED_IMAGE_TYPES = {
     "image/jpeg", "image/jpg", "image/png",
     "image/webp", "image/bmp",
 }
+
+# Magic bytes for actual file-content validation (defense against MIME spoofing)
+_MAGIC_BYTES: list[tuple[bytes, str]] = [
+    (b"\xff\xd8\xff", "JPEG"),
+    (b"\x89PNG\r\n\x1a\n", "PNG"),
+    (b"RIFF", "WebP"),   # WebP: RIFF....WEBP — we check RIFF prefix only
+    (b"BM", "BMP"),
+]
+
+
+def _validate_image_magic(data: bytes) -> bool:
+    """Return True if the file starts with a recognised image magic sequence."""
+    for magic, _ in _MAGIC_BYTES:
+        if data[:len(magic)] == magic:
+            return True
+    return False
 
 
 # ── Response Schema ────────────────────────────────────────────────────────
@@ -44,15 +61,16 @@ class BranchScoresOut(BaseModel):
 class ImageDetectionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    job_id:          str
-    verdict:         str
-    confidence:      float
-    fake_probability: float
-    real_probability: float
-    faces_detected:  int
-    branch_scores:   dict
-    heatmap_url:     str | None
-    processing_ms:   int
+    job_id:                 str
+    verdict:                str
+    confidence:             float
+    fake_probability:       float
+    real_probability:       float
+    faces_detected:         int
+    branch_scores:          dict
+    heatmap_url:            str | None
+    processing_ms:          int
+    random_weights_warning: bool = False
 
 
 # ── Endpoint ───────────────────────────────────────────────────────────────
@@ -75,7 +93,18 @@ async def detect_image(
     import time
     start_ms = int(time.time() * 1000)
 
-    # ── Validate file type ─────────────────────────────────────────────────
+    # ── Model readiness gate ───────────────────────────────────────────────
+    # Check before reading the file so we fail fast on unavailable model.
+    readiness = check_image_model()
+    try:
+        require_model_ready(readiness)
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+
+    # ── Validate file type (MIME) ──────────────────────────────────────────
     content_type = file.content_type or ""
     if content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
@@ -83,8 +112,18 @@ async def detect_image(
             detail=f"Unsupported file type: {content_type}. Allowed: JPEG, PNG, WebP, BMP",
         )
 
-    # ── Read and validate file size ────────────────────────────────────────
-    file_bytes = await file.read()
+    # ── Enforce size limit BEFORE reading full file ────────────────────────
+    # Read only the first 16 bytes for magic check, then decide whether to read the rest.
+    header = await file.read(16)
+    if not _validate_image_magic(header):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="File content does not match a supported image format (magic byte check failed).",
+        )
+
+    # Read remainder
+    rest = await file.read()
+    file_bytes = header + rest
     file_size  = len(file_bytes)
 
     if file_size > settings.max_image_size_bytes:
@@ -102,7 +141,13 @@ async def detect_image(
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    ext = Path(file.filename or "upload.jpg").suffix.lower() or ".jpg"
+    # SECURITY: Sanitize extension against a strict whitelist to prevent path
+    # traversal via crafted filenames like "../../etc/passwd" or "shell.php.jpg".
+    # The stored filename is always uuid4().hex + a whitelisted extension, so
+    # the user-supplied filename cannot influence the on-disk path.
+    _SAFE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    raw_ext = Path(file.filename or "").suffix.lower()
+    ext = raw_ext if raw_ext in _SAFE_IMAGE_EXTS else ".jpg"
     stored_filename = f"{uuid.uuid4().hex}{ext}"
     file_path       = upload_dir / stored_filename
 
@@ -129,10 +174,14 @@ async def detect_image(
     # ── Run inference pipeline ─────────────────────────────────────────────
     try:
         from pipelines.image_pipeline import get_image_pipeline
+        from models.registry import get_image_model
         pipeline = get_image_pipeline()
         result   = pipeline.run(str(file_path), generate_heatmap=generate_heatmap)
 
         verdict_enum = Verdict[result.verdict.upper()] if result.verdict in ("real", "fake") else Verdict.UNKNOWN
+
+        # Determine whether model is running on random (untrained) weights
+        random_weights_warning = getattr(get_image_model(), "random_weights", False)
 
         # Save result to DB
         db_result = DetectionResult(
@@ -178,6 +227,7 @@ async def detect_image(
             branch_scores=result.branch_scores,
             heatmap_url=result.heatmap_url,
             processing_ms=elapsed_ms,
+            random_weights_warning=random_weights_warning,
         )
 
     except Exception as e:
@@ -186,6 +236,13 @@ async def detect_image(
         job.status    = JobStatus.FAILED
         job.error_msg = str(e)
         job.ended_at  = datetime.now(timezone.utc)
+
+        # Explicitly commit the failure status before raising so the DB update
+        # is not rolled back by FastAPI's get_db() exception handler (B-03).
+        try:
+            await db.commit()
+        except Exception:
+            pass  # If commit itself fails, we still want to return the HTTP error
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

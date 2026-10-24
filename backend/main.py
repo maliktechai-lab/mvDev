@@ -58,6 +58,11 @@ app = FastAPI(
 # ── Middleware ─────────────────────────────────────────────────────────────
 
 # CORS
+# SECURITY NOTE: allow_headers=["*"] is intentionally permissive for development.
+# In production, restrict this to the specific headers your frontend sends
+# (e.g. ["Authorization", "Content-Type", "Accept", "X-Request-ID"]).
+# The allowed origins are controlled via the ALLOWED_ORIGINS env var, which
+# should be set to your exact frontend domain(s) in production (never "*").
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins_list,

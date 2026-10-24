@@ -49,6 +49,14 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    # TODO(security): No rate limiting is applied to this endpoint.
+    # Brute-force attacks (credential stuffing, password spraying) are possible.
+    # Mitigate by adding one of:
+    #   - slowapi (pip install slowapi) with a Redis backend for per-IP limits
+    #   - A reverse-proxy-level rate limit in Nginx (limit_req_zone)
+    #   - Account lockout after N consecutive failures (requires a failed_attempts
+    #     counter column on the User model and a cooldown period)
+    # See DESIGN.md § "Security — Brute-force protection" for full discussion.
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 

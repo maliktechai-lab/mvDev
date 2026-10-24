@@ -8,6 +8,7 @@ import {
 import { Link } from "react-router-dom";
 import { jobsApi } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
+import { ModelStatusBanner } from "@/components/common/ModelStatusBanner";
 import type { DetectionJob } from "@/types";
 
 // ── Animated number ──────────────────────────────────────────────────────
@@ -154,6 +155,9 @@ export function DashboardPage() {
           Here's your detection activity at a glance.
         </p>
       </motion.div>
+
+      {/* Model availability banner — shown when checkpoints are missing or corrupt */}
+      <ModelStatusBanner />
 
       {/* Stat cards */}
       <div className="mb-8 grid grid-cols-2 gap-4 xl:grid-cols-4">

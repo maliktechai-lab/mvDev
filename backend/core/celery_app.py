@@ -20,6 +20,9 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Suppress CPendingDeprecationWarning introduced in Celery 5.3+.
+    # Explicitly opt-in to connection retries on startup (was the old default).
+    broker_connection_retry_on_startup=True,
     task_routes={
         "pipelines.video_pipeline.*": {"queue": "video"},
         "pipelines.audio_pipeline.*": {"queue": "audio"},

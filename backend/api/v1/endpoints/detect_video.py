@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -44,6 +44,7 @@ class VideoSubmitResponse(BaseModel):
 
 @router.post("/video", response_model=VideoSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
 async def detect_video(
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -65,6 +66,23 @@ async def detect_video(
         )
 
     # ── Read file & validate size ──────────────────────────────────────────
+    # SECURITY: Check Content-Length header before reading the body.
+    # The header is client-supplied and therefore unreliable, but it lets us
+    # reject obviously-oversized uploads (e.g. a 2 GB file) without buffering
+    # the entire payload into memory first.  A hard limit is still enforced
+    # after the actual read so a lying client cannot bypass this check.
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            cl_bytes = int(content_length)
+            if cl_bytes > settings.max_video_size_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Content-Length {cl_bytes / 1e6:.0f} MB exceeds max {settings.MAX_VIDEO_SIZE_MB} MB",
+                )
+        except ValueError:
+            pass  # Unparseable header — let the actual read enforce the limit
+
     file_bytes = await file.read()
     file_size  = len(file_bytes)
 
@@ -83,7 +101,12 @@ async def detect_video(
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    ext             = Path(file.filename or "upload.mp4").suffix.lower() or ".mp4"
+    # SECURITY: Sanitize extension against a strict whitelist to prevent path
+    # traversal via crafted filenames. uuid4().hex ensures no user-controlled
+    # bytes appear in the stored path.
+    _SAFE_VIDEO_EXTS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+    raw_ext = Path(file.filename or "").suffix.lower()
+    ext             = raw_ext if raw_ext in _SAFE_VIDEO_EXTS else ".mp4"
     stored_filename = f"{uuid.uuid4().hex}{ext}"
     file_path       = upload_dir / stored_filename
 

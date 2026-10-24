@@ -14,6 +14,7 @@ import { AudioWaveform } from "@/components/results/AudioWaveform";
 import { AnalysisPipeline } from "@/components/analysis/AnalysisPipeline";
 import { ScannerBeam } from "@/components/3d/ScannerBeam";
 import { useJobPoller } from "@/hooks/useJobPoller";
+import { ModelStatusBanner } from "@/components/common/ModelStatusBanner";
 import type { DetectionJob } from "@/types";
 
 type MediaType = "image" | "video" | "audio";
@@ -392,8 +393,24 @@ export function DetectPage() {
         setStage("polling");
         toast("Audio uploaded — analyzing in background…", { icon: "🎵" });
       }
-    } catch {
+    } catch (err: unknown) {
       setStage("dropped");
+      // Surface the backend error detail specifically for model-unavailable (503)
+      const axiosErr = err as { response?: { status?: number; data?: { detail?: string } } };
+      const status = axiosErr?.response?.status;
+      const detail = axiosErr?.response?.data?.detail;
+      if (status === 503) {
+        toast.error(
+          detail ||
+            "Model not available — no trained checkpoint loaded. See the status banner above.",
+          { duration: 6000 }
+        );
+      } else if (status === 413) {
+        toast.error(detail || "File too large.");
+      } else if (status === 415) {
+        toast.error(detail || "Unsupported file type.");
+      }
+      // 401/403 are handled globally by the axios interceptor; other errors show via the global interceptor
     }
   };
 
@@ -432,6 +449,9 @@ export function DetectPage() {
           </p>
         </motion.div>
       </div>
+
+      {/* Model availability banner — shows when checkpoints are missing or corrupt */}
+      <ModelStatusBanner />
 
       <div className="px-8 pb-8">
         <div className="mx-auto max-w-3xl">

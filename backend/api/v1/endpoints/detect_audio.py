@@ -82,7 +82,12 @@ async def detect_audio(
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    stored_ext      = ext or ".mp3"
+    # SECURITY: Sanitize extension against a strict whitelist to prevent path
+    # traversal via crafted filenames. uuid4().hex ensures no user-controlled
+    # bytes appear in the stored path.
+    _SAFE_AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
+    raw_ext = Path(file.filename or "").suffix.lower()
+    stored_ext      = raw_ext if raw_ext in _SAFE_AUDIO_EXTS else ".mp3"
     stored_filename = f"{uuid.uuid4().hex}{stored_ext}"
     file_path       = upload_dir / stored_filename
 

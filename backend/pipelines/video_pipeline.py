@@ -267,88 +267,115 @@ def run_video_detection(self, job_id: str, video_path: str) -> dict:
         dict with result summary (stored in Celery result backend)
     """
     import asyncio
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    return asyncio.run(_run_video_detection_async(self, job_id, video_path))
+
+
+async def _run_video_detection_async(task, job_id: str, video_path: str) -> dict:
+    """Async implementation of the video detection task."""
     from sqlalchemy import select
+    from db.database import AsyncSessionLocal
     from db.models import DetectionJob, DetectionResult, JobStatus, Verdict
+    from core.model_readiness import check_video_model, require_model_ready
 
     logger.info(f"[Celery] Starting video detection for job={job_id}")
 
-    # Update job status to RUNNING
-    async def update_db(status, **result_kwargs):
-        from core.config import settings as cfg
-        engine  = create_async_engine(cfg.DATABASE_URL, pool_pre_ping=True)
-        Session = async_sessionmaker(engine, expire_on_commit=False)
+    # ── Model readiness gate (fail fast before any heavy work) ─────────────
+    try:
+        readiness = check_video_model()
+        require_model_ready(readiness)
+    except RuntimeError as exc:
+        logger.error(f"[Celery] Model not ready for job={job_id}: {exc}")
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
+            job = res.scalar_one_or_none()
+            if job:
+                job.status    = JobStatus.FAILED
+                job.error_msg = str(exc)
+                job.ended_at  = datetime.now(timezone.utc)
+                await db.commit()
+        raise task.retry(exc=exc)
 
-        async with Session() as db:
+    try:
+        # ── Mark job as RUNNING ────────────────────────────────────────────
+        async with AsyncSessionLocal() as db:
             res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
             job = res.scalar_one_or_none()
             if not job:
-                return
-
-            job.status = status
-            if status == JobStatus.RUNNING:
-                job.started_at = datetime.now(timezone.utc)
-            else:
-                job.ended_at = datetime.now(timezone.utc)
-
-            if result_kwargs:
-                verdict_str = result_kwargs.get("verdict", "unknown")
-                verdict_enum = Verdict[verdict_str.upper()] if verdict_str in ("real", "fake") else Verdict.UNKNOWN
-
-                db_result = DetectionResult(
-                    job_id=job.id,
-                    verdict=verdict_enum,
-                    confidence=result_kwargs.get("confidence", 0.0),
-                    branch_scores=result_kwargs.get("branch_scores"),
-                    frame_scores=result_kwargs.get("frame_scores"),
-                    heatmap_path=result_kwargs.get("heatmap_path"),
-                    heatmap_url=result_kwargs.get("heatmap_url"),
-                    duration_sec=result_kwargs.get("duration_sec"),
-                    frames_analyzed=result_kwargs.get("frames_analyzed"),
-                    faces_detected=result_kwargs.get("faces_detected"),
-                    raw_output={
-                        "fake_probability": result_kwargs.get("fake_probability"),
-                        "real_probability": result_kwargs.get("real_probability"),
-                        "suspicious_timestamps": result_kwargs.get("suspicious_timestamps", []),
-                    },
-                )
-                db.add(db_result)
-
+                logger.error(f"[Celery] Job {job_id} not found in DB")
+                return {"job_id": job_id, "error": "job not found"}
+            job.status     = JobStatus.RUNNING
+            job.started_at = datetime.now(timezone.utc)
             await db.commit()
-        await engine.dispose()
 
-    try:
-        asyncio.run(update_db(JobStatus.RUNNING))
-
+        # ── Run inference ──────────────────────────────────────────────────
         pipeline = VideoInferencePipeline()
         result   = pipeline.run(video_path, generate_heatmap=True)
 
         if result.error:
             raise RuntimeError(result.error)
 
-        asyncio.run(update_db(
-            JobStatus.COMPLETED,
-            verdict=result.verdict,
-            confidence=result.confidence,
-            fake_probability=result.fake_probability,
-            real_probability=result.real_probability,
-            branch_scores=result.branch_scores,
-            frame_scores=result.frame_scores,
-            heatmap_path=result.heatmap_path,
-            heatmap_url=result.heatmap_url,
-            duration_sec=result.duration_sec,
-            frames_analyzed=result.frames_analyzed,
-            faces_detected=result.faces_detected,
-            suspicious_timestamps=result.suspicious_timestamps,
-        ))
+        # ── Persist result ─────────────────────────────────────────────────
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
+            job = res.scalar_one_or_none()
+            if not job:
+                logger.error(f"[Celery] Job {job_id} disappeared before result save")
+                return {"job_id": job_id, "error": "job not found after inference"}
+
+            verdict_str  = result.verdict
+            verdict_enum = Verdict[verdict_str.upper()] if verdict_str in ("real", "fake") else Verdict.UNKNOWN
+
+            db_result = DetectionResult(
+                job_id=job.id,
+                verdict=verdict_enum,
+                confidence=result.confidence,
+                branch_scores=result.branch_scores,
+                frame_scores=result.frame_scores,
+                heatmap_path=result.heatmap_path,
+                heatmap_url=result.heatmap_url,
+                duration_sec=result.duration_sec,
+                frames_analyzed=result.frames_analyzed,
+                faces_detected=result.faces_detected,
+                raw_output={
+                    "fake_probability":     result.fake_probability,
+                    "real_probability":     result.real_probability,
+                    "suspicious_timestamps": result.suspicious_timestamps,
+                },
+            )
+            db.add(db_result)
+
+            job.status   = JobStatus.COMPLETED
+            job.ended_at = datetime.now(timezone.utc)
+            await db.commit()
 
         logger.info(f"[Celery] Video detection complete for job={job_id}")
         return {"job_id": job_id, "verdict": result.verdict, "confidence": result.confidence}
 
     except Exception as exc:
         logger.exception(f"[Celery] Video detection failed for job={job_id}: {exc}")
-        asyncio.run(update_db(JobStatus.FAILED))
-        raise self.retry(exc=exc)
+        # Persist FAILED status so the gap is not lost on rollback
+        try:
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
+                job = res.scalar_one_or_none()
+                if job:
+                    job.status    = JobStatus.FAILED
+                    job.error_msg = str(exc)
+                    job.ended_at  = datetime.now(timezone.utc)
+                    await db.commit()
+        except Exception as db_exc:
+            logger.error(f"[Celery] Failed to persist FAILED status for job={job_id}: {db_exc}")
+        raise task.retry(exc=exc)
+
+    finally:
+        # ── Temp file cleanup ──────────────────────────────────────────────
+        try:
+            p = Path(video_path)
+            if p.exists():
+                p.unlink()
+                logger.debug(f"[Celery] Cleaned up temp file: {video_path}")
+        except Exception as cleanup_exc:
+            logger.warning(f"[Celery] Could not remove temp file {video_path}: {cleanup_exc}")
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────
