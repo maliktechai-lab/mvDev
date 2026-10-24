@@ -1,11 +1,8 @@
-import { clsx } from "clsx";
+import { useState } from "react";
+import { motion } from "framer-motion";
+import { AlertTriangle, Music2 } from "lucide-react";
 
-interface ChunkScore {
-  chunk: number;
-  score: number;
-  start: number;
-  end: number;
-}
+interface ChunkScore { chunk: number; score: number; start: number; end: number; }
 
 interface AudioWaveformProps {
   chunkScores: ChunkScore[];
@@ -13,74 +10,144 @@ interface AudioWaveformProps {
   suspiciousTimestamps: number[];
 }
 
-function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
+function fmt(s: number) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
 export function AudioWaveform({ chunkScores, duration, suspiciousTimestamps }: AudioWaveformProps) {
+  const [hovered, setHovered] = useState<number | null>(null);
   if (!chunkScores.length) return null;
 
   return (
-    <div className="card">
-      <h3 className="mb-4 text-sm font-semibold text-gray-300">Segment-by-Segment Analysis</h3>
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.3 }}
+      className="card-glow"
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <Music2 className="h-4 w-4" style={{ color: "#00f5ff" }} />
+        <h3 className="text-sm font-bold text-gray-200">Segment-by-Segment Waveform</h3>
+        <span className="ml-auto text-xs text-gray-600">{chunkScores.length} segments · {fmt(duration)}</span>
+      </div>
 
-      {/* Segment bars */}
-      <div className="flex items-end gap-1 overflow-hidden rounded-lg bg-gray-800 px-2 py-2" style={{ height: 64 }}>
-        {chunkScores.map((cs) => {
-          const heightPct = Math.max(8, cs.score * 100);
-          const color =
-            cs.score >= 0.7 ? "bg-red-500" :
-            cs.score >= 0.5 ? "bg-yellow-500" : "bg-green-500";
+      {/* Waveform visualization — symmetric bars */}
+      <div
+        className="relative mb-2 flex items-center justify-center gap-px overflow-hidden rounded-xl"
+        style={{ height: 80, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }}
+      >
+        {chunkScores.map((cs, i) => {
+          const h      = Math.max(8, cs.score * 90);
+          const color  = cs.score >= 0.7 ? "#ff003c" : cs.score >= 0.5 ? "#f97316" : "#00f5ff";
+          const isHov  = hovered === i;
           return (
-            <div
+            <motion.div
               key={cs.chunk}
-              className={clsx("flex-1 rounded-t transition-all", color)}
-              style={{ height: `${heightPct}%` }}
-              title={`${formatTime(cs.start)}–${formatTime(cs.end)} — ${Math.round(cs.score * 100)}% synthetic`}
-              role="presentation"
-            />
+              className="relative flex cursor-crosshair flex-col items-center justify-center gap-px"
+              style={{ flex: 1, height: "100%" }}
+              onMouseEnter={() => setHovered(i)}
+              onMouseLeave={() => setHovered(null)}
+            >
+              {/* Top half bar */}
+              <motion.div
+                style={{
+                  width: "70%",
+                  height: `${h / 2}%`,
+                  background: isHov ? "#ffffff" : color,
+                  borderRadius: "2px 2px 0 0",
+                  opacity: isHov ? 1 : 0.8,
+                  boxShadow: isHov ? `0 0 8px ${color}` : "none",
+                  minWidth: 1,
+                }}
+                initial={{ scaleY: 0 }}
+                animate={{ scaleY: 1 }}
+                transition={{ delay: i * 0.005, duration: 0.4 }}
+              />
+              {/* Center line */}
+              <div style={{ height: 1, width: "100%", background: "rgba(255,255,255,0.05)" }} />
+              {/* Bottom half bar (mirrored) */}
+              <motion.div
+                style={{
+                  width: "70%",
+                  height: `${h / 2}%`,
+                  background: isHov ? "#ffffff" : color,
+                  borderRadius: "0 0 2px 2px",
+                  opacity: isHov ? 1 : 0.5,
+                  minWidth: 1,
+                }}
+                initial={{ scaleY: 0 }}
+                animate={{ scaleY: 1 }}
+                transition={{ delay: i * 0.005, duration: 0.4 }}
+              />
+
+              {/* Hover tooltip */}
+              {isHov && (
+                <div
+                  className="pointer-events-none absolute top-1 rounded px-2 py-0.5 text-xs font-mono"
+                  style={{
+                    background: "rgba(10,15,30,0.95)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    color,
+                    zIndex: 10,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {fmt(cs.start)}–{fmt(cs.end)} · {Math.round(cs.score * 100)}%
+                </div>
+              )}
+            </motion.div>
           );
         })}
       </div>
 
-      {/* Labels */}
-      <div className="mt-2 flex justify-between text-xs text-gray-600">
+      {/* Time axis */}
+      <div className="mb-4 flex justify-between text-xs text-gray-700">
         <span>0:00</span>
-        <span>{formatTime(duration / 2)}</span>
-        <span>{formatTime(duration)}</span>
+        <span>{fmt(duration / 2)}</span>
+        <span>{fmt(duration)}</span>
       </div>
 
       {/* Legend */}
-      <div className="mt-3 flex gap-4 text-xs">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-green-500" /><span className="text-gray-400">Natural</span>
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" /><span className="text-gray-400">Uncertain</span>
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-red-500" /><span className="text-gray-400">Synthetic</span>
-        </span>
+      <div className="flex gap-5 text-xs">
+        {[["#00f5ff", "Natural (<50%)"], ["#f97316", "Uncertain (50–70%)"], ["#ff003c", "Synthetic (>70%)"]].map(([c, l]) => (
+          <div key={l} className="flex items-center gap-1.5">
+            <div className="h-2.5 w-2.5 rounded-full" style={{ background: c, boxShadow: `0 0 4px ${c}` }} />
+            <span style={{ color: "#475569" }}>{l}</span>
+          </div>
+        ))}
       </div>
 
       {/* Suspicious segments */}
       {suspiciousTimestamps.length > 0 && (
-        <div className="mt-4 rounded-lg border border-red-700/30 bg-red-900/10 p-3">
-          <p className="mb-2 text-xs font-semibold text-red-400">⚠ Synthetic segments at:</p>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4 }}
+          className="mt-4 rounded-xl p-3"
+          style={{ background: "rgba(255,0,60,0.06)", border: "1px solid rgba(255,0,60,0.2)" }}
+        >
+          <div className="mb-2 flex items-center gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
+            <p className="text-xs font-semibold text-red-400">Synthetic segments detected</p>
+          </div>
           <div className="flex flex-wrap gap-2">
             {suspiciousTimestamps.slice(0, 10).map((ts, i) => (
-              <span key={i} className="rounded bg-red-900/30 px-2 py-0.5 font-mono text-xs text-red-300">
-                {formatTime(ts)}
-              </span>
+              <motion.span
+                key={i}
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ delay: i * 0.04, type: "spring" }}
+                className="rounded-lg px-2.5 py-1 font-mono text-xs text-red-300"
+                style={{ background: "rgba(255,0,60,0.12)", border: "1px solid rgba(255,0,60,0.2)" }}
+              >
+                {fmt(ts)}
+              </motion.span>
             ))}
-            {suspiciousTimestamps.length > 10 && (
-              <span className="text-xs text-gray-500">+{suspiciousTimestamps.length - 10} more</span>
-            )}
           </div>
-        </div>
+        </motion.div>
       )}
-    </div>
+    </motion.div>
   );
 }

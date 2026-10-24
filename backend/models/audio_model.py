@@ -54,13 +54,15 @@ class SincConv(nn.Module):
         self.band_hz_  = nn.Parameter((hz_points[1:-1] - hz_points[:-2]).unsqueeze(1))
 
         # Hamming window
-        n_lin = torch.linspace(0, (self.kernel_size - 1) / 2, steps=int((self.kernel_size - 1) / 2 + 1))
+        # n_ has (kernel_size - 1) / 2 elements (left half, excluding center)
+        n = (self.kernel_size - 1) / 2
+        n_vals = torch.arange(-n, 0)   # length = kernel_size // 2 = 512 for k=1025
+        self.register_buffer("n_", 2 * torch.pi * n_vals.view(1, -1) / sample_rate)
+
+        # Hamming window — must match n_ length exactly
+        n_lin  = torch.linspace(0, (self.kernel_size - 1) / 2, steps=int(n))
         window = 0.54 - 0.46 * torch.cos(2 * torch.pi * n_lin / self.kernel_size)
         self.register_buffer("window_", window.unsqueeze(0))
-
-        # Time axis
-        n = (self.kernel_size - 1) / 2
-        self.register_buffer("n_", 2 * torch.pi * torch.arange(-n, 0).view(1, -1) / sample_rate)
 
     def forward(self, waveforms: torch.Tensor) -> torch.Tensor:
         """

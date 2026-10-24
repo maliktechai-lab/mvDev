@@ -1,46 +1,57 @@
 # DeepGuard-Image Training Configuration
-# Run with: python backend/training/train_image.py --config ml/experiments/image_model.yaml
+# All components trained from scratch — no pretrained weights.
+#
+# Run with:
+#   python backend/training/train_image.py \
+#     --dataset_root ml/datasets/processed \
+#     --epochs 50 --batch_size 32 --device cuda
 
-experiment_name: deepguard_image_v1
-description: "EfficientNet-B4 with 3-branch spatial/frequency/attention architecture"
+experiment_name: deepguard_image_v1_scratch
+description: >
+  Custom 3-branch deepfake detector trained entirely from scratch.
+  Branch 1 — Spatial:    Custom deep CNN (depthwise-sep + SE + residual, ~5.2M params)
+  Branch 2 — Frequency:  FFT + DCT CNN (frequency artifact detection)
+  Branch 3 — Attention:  Cross-attention between spatial and frequency features
 
 # Dataset
 dataset:
   root: ml/datasets/processed
-  max_per_class: null           # null = use all; set e.g. 5000 for quick runs
+  max_per_class: null           # null = use all; e.g. 5000 for quick smoke tests
 
-# Model
+# Model — no pretrained backbone
 model:
-  pretrained: true
-  backbone: efficientnet_b4
+  pretrained: false             # always false — this is a from-scratch model
   branch_dim: 512
+  spatial_stages: 5             # stem + 5 stages in SpatialBranch
+  attention_heads: 8
 
 # Training
 training:
-  epochs: 30
+  epochs: 50
   batch_size: 32
   num_workers: 4
-  learning_rate: 0.0002
+  learning_rate: 0.0003
   weight_decay: 0.0001
   label_smoothing: 0.1
-  patience: 7                   # Early stopping patience
-  mixed_precision: true         # AMP (GPU only)
+  warmup_epochs: 5              # Linear LR warmup before cosine decay
+  patience: 10                  # Early stopping patience (epochs without val AUC improvement)
+  mixed_precision: true         # AMP (GPU only, ignored on CPU)
 
-# Optimizer
+# Optimizer — unified LR (no backbone/head split needed for scratch model)
 optimizer:
   type: AdamW
-  backbone_lr_multiplier: 0.1  # Backbone gets 10x lower LR than new heads
+  betas: [0.9, 0.999]
 
-# Scheduler
+# Scheduler — linear warmup → cosine decay
 scheduler:
-  type: CosineAnnealingLR
-  T_max: 30
+  type: cosine_with_warmup
+  warmup_epochs: 5
   eta_min: 0.000001
 
 # Loss
 loss:
   main_weight: 1.0
-  aux_weight: 0.3               # Weight for auxiliary branch losses
+  aux_weight: 0.3               # Per-branch auxiliary loss weight (deep supervision)
 
 # Augmentation (training only)
 augmentation:
@@ -48,14 +59,15 @@ augmentation:
   color_jitter: true
   gaussian_blur: 0.2
   random_erasing: 0.1
+  random_rotation: 10
 
 # Checkpointing
 checkpoint:
   dir: ml/checkpoints
+  canonical_name: deepguard_image.pth   # name the registry looks for
   save_every_n_epochs: 5
-  keep_best_n: 3
 
-# Evaluation
+# Evaluation metrics
 evaluation:
   threshold: 0.5
   metrics:

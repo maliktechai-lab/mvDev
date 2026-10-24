@@ -28,10 +28,14 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ["react", "react-dom", "react-router-dom"],
-          query: ["@tanstack/react-query"],
+          "vendor-react":  ["react", "react-dom", "react-router-dom"],
+          "vendor-query":  ["@tanstack/react-query"],
+          "vendor-motion": ["framer-motion"],
+          "vendor-three":  ["three", "@react-three/fiber", "@react-three/drei"],
+          "vendor-charts": ["recharts"],
         },
       },
     },
+    chunkSizeWarningLimit: 800,
   },
 });

@@ -1,9 +1,10 @@
 """
 DeepGuard-Video Model
 =====================
-Four-branch architecture for detecting fake videos:
+Four-branch architecture for detecting fake videos.
+ALL components built from scratch — no pretrained weights, no external backbones.
 
-  Branch 1 — Spatial:    EfficientNet-B4 per frame (pixel artifacts)
+  Branch 1 — Spatial:    Custom deep CNN per frame (same backbone as image model)
   Branch 2 — Frequency:  FFT CNN per frame (GAN fingerprints over time)
   Branch 3 — Temporal:   LSTM over frame embedding sequence (motion/blink/pose)
   Branch 4 — Biological: rPPG signal extraction (blood flow patterns)
@@ -14,33 +15,34 @@ All four branch outputs are fused via a learned MLP head.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import timm
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
 
-# ── Spatial branch (per-frame EfficientNet) ───────────────────────────────
+# ── Re-use scratch building blocks from image_model ───────────────────────
+# Importing directly avoids duplication while keeping a single source of truth.
+from models.image_model import (
+    ConvBnAct,
+    SqueezeExcitation,
+    DepthwiseSeparableBlock,
+    ResBlock,
+    SpatialBranch as _ImageSpatialBranch,
+)
+
+
+# ── Spatial branch (per-frame custom CNN) ────────────────────────────────
 
 class VideoSpatialBranch(nn.Module):
     """
-    Applies EfficientNet-B4 frame-by-frame.
-    Returns per-frame feature vectors AND a temporal average pooling.
+    Applies the same from-scratch CNN backbone as the image model, frame-by-frame.
+    Returns per-frame feature vectors AND a temporal average pool.
+    No pretrained weights — trains entirely from data.
     """
 
-    def __init__(self, out_features: int = 512, pretrained: bool = True):
+    def __init__(self, out_features: int = 512):
         super().__init__()
-        self.backbone = timm.create_model(
-            "efficientnet_b4",
-            pretrained=pretrained,
-            num_classes=0,
-            global_pool="avg",
-        )
-        feat_dim = self.backbone.num_features   # 1792 for B4
-        self.project = nn.Sequential(
-            nn.Linear(feat_dim, out_features),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-        )
+        # Shared CNN backbone (same architecture as image SpatialBranch)
+        self.backbone = _ImageSpatialBranch(out_features=out_features)
 
     def forward(self, frames: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -52,12 +54,10 @@ class VideoSpatialBranch(nn.Module):
             pooled:      (B, out_features)    — temporal average
         """
         B, T, C, H, W = frames.shape
-        # Flatten batch+time for efficient backbone pass
-        flat = frames.view(B * T, C, H, W)
-        feat = self.backbone(flat)             # (B*T, 1792)
-        feat = self.project(feat)              # (B*T, out_features)
-        frame_feats = feat.view(B, T, -1)      # (B, T, out_features)
-        pooled = frame_feats.mean(dim=1)       # (B, out_features)
+        flat = frames.view(B * T, C, H, W)      # merge batch+time
+        feat = self.backbone(flat)               # (B*T, out_features)
+        frame_feats = feat.view(B, T, -1)        # (B, T, out_features)
+        pooled = frame_feats.mean(dim=1)         # (B, out_features)
         return frame_feats, pooled
 
 
@@ -290,10 +290,10 @@ class DeepGuardVideoModel(nn.Module):
     TEMPORAL_DIM   = 512
     BIOLOGICAL_DIM = 256
 
-    def __init__(self, pretrained: bool = True):
+    def __init__(self):
         super().__init__()
 
-        self.spatial_branch    = VideoSpatialBranch(out_features=self.SPATIAL_DIM, pretrained=pretrained)
+        self.spatial_branch    = VideoSpatialBranch(out_features=self.SPATIAL_DIM)
         self.frequency_branch  = VideoFrequencyBranch(out_features=self.FREQ_DIM)
         self.temporal_branch   = TemporalBranch(input_size=self.SPATIAL_DIM, out_features=self.TEMPORAL_DIM)
         self.biological_branch = BiologicalBranch(out_features=self.BIOLOGICAL_DIM)
@@ -375,13 +375,18 @@ class DeepGuardVideoModel(nn.Module):
         }
 
 
-def build_video_model(pretrained: bool = True, device: str = "cpu") -> DeepGuardVideoModel:
-    model = DeepGuardVideoModel(pretrained=pretrained)
+def build_video_model(pretrained: bool = False, device: str = "cpu") -> DeepGuardVideoModel:
+    """
+    Build DeepGuardVideoModel from scratch.
+    The `pretrained` argument is kept for API compatibility but is ignored.
+    """
+    model = DeepGuardVideoModel()
     return model.to(device)
 
 
 def load_video_model(checkpoint_path: str, device: str = "cpu") -> DeepGuardVideoModel:
-    model = DeepGuardVideoModel(pretrained=False)
+    """Load a trained video model from a saved checkpoint."""
+    model = DeepGuardVideoModel()
     state = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state["model_state_dict"])
     return model.to(device).eval()

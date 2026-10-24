@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
@@ -68,6 +69,7 @@ async def get_job(
     """Get a specific detection job (with result if completed)."""
     result = await db.execute(
         select(DetectionJob)
+        .options(selectinload(DetectionJob.result))
         .where(DetectionJob.id == job_id, DetectionJob.user_id == current_user.id)
     )
     job = result.scalar_one_or_none()
@@ -76,18 +78,18 @@ async def get_job(
     return job
 
 
-@router.get("/", response_model=List[JobResponse])
-async def list_jobs(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    media_type: Optional[MediaType] = Query(default=None),
-    status_filter: Optional[JobStatus] = Query(default=None, alias="status"),
-):
-    """List all jobs for the current user with pagination."""
+async def _list_jobs_impl(
+    db: AsyncSession,
+    current_user: User,
+    page: int,
+    page_size: int,
+    media_type: Optional[MediaType],
+    status_filter: Optional[JobStatus],
+) -> List[JobResponse]:
+    """Shared implementation for list-jobs routes."""
     query = (
         select(DetectionJob)
+        .options(selectinload(DetectionJob.result))
         .where(DetectionJob.user_id == current_user.id)
         .order_by(desc(DetectionJob.created_at))
         .offset((page - 1) * page_size)
@@ -100,6 +102,21 @@ async def list_jobs(
 
     result = await db.execute(query)
     return result.scalars().all()
+
+
+# Both /jobs and /jobs/ — prevents the 307 redirect when frontend omits the slash
+@router.get("", response_model=List[JobResponse])
+@router.get("/", response_model=List[JobResponse], include_in_schema=False)
+async def list_jobs(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    media_type: Optional[MediaType] = Query(default=None),
+    status_filter: Optional[JobStatus] = Query(default=None, alias="status"),
+):
+    """List all jobs for the current user with pagination."""
+    return await _list_jobs_impl(db, current_user, page, page_size, media_type, status_filter)
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

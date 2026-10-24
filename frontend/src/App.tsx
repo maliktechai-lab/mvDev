@@ -2,13 +2,14 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "react-hot-toast";
 
-import { ProtectedRoute } from "@/components/common/ProtectedRoute";
-import { LoginPage }     from "@/pages/LoginPage";
-import { RegisterPage }  from "@/pages/RegisterPage";
-import { DashboardPage } from "@/pages/DashboardPage";
-import { DetectPage }    from "@/pages/DetectPage";
-import { HistoryPage }   from "@/pages/HistoryPage";
-import { SettingsPage }  from "@/pages/SettingsPage";
+import { ProtectedRoute }  from "@/components/common/ProtectedRoute";
+import { LoginPage }       from "@/pages/LoginPage";
+import { RegisterPage }    from "@/pages/RegisterPage";
+import { DashboardPage }   from "@/pages/DashboardPage";
+import { DetectPage }      from "@/pages/DetectPage";
+import { HistoryPage }     from "@/pages/HistoryPage";
+import { SettingsPage }    from "@/pages/SettingsPage";
+import { NotFoundPage }    from "@/pages/NotFoundPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,11 +25,11 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          {/* Public routes */}
+          {/* Public */}
           <Route path="/login"    element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
 
-          {/* Protected routes — wrapped in AppLayout */}
+          {/* Protected — wrapped in AppLayout */}
           <Route element={<ProtectedRoute />}>
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/detect"    element={<DetectPage />} />
@@ -38,21 +39,23 @@ export default function App() {
 
           {/* Default redirect */}
           <Route path="/"  element={<Navigate to="/dashboard" replace />} />
-          <Route path="*"  element={<Navigate to="/dashboard" replace />} />
+          {/* 404 */}
+          <Route path="*"  element={<NotFoundPage />} />
         </Routes>
       </BrowserRouter>
 
-      {/* Toast notifications */}
       <Toaster
         position="top-right"
         toastOptions={{
           style: {
-            background: "#1f2937",
-            color: "#f9fafb",
-            border: "1px solid #374151",
+            background: "rgba(13, 20, 36, 0.95)",
+            color: "#e2e8f0",
+            border: "1px solid rgba(255,255,255,0.08)",
+            backdropFilter: "blur(20px)",
+            borderRadius: "12px",
           },
-          success: { iconTheme: { primary: "#22c55e", secondary: "#fff" } },
-          error:   { iconTheme: { primary: "#ef4444", secondary: "#fff" } },
+          success: { iconTheme: { primary: "#00ff88", secondary: "#030712" } },
+          error:   { iconTheme: { primary: "#ff003c", secondary: "#030712" } },
         }}
       />
     </QueryClientProvider>

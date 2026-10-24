@@ -40,6 +40,9 @@ async def get_db() -> AsyncSession:
 
 
 async def create_tables() -> None:
-    """Create all tables on startup (dev only — use Alembic in prod)."""
+    """Create all tables on startup (dev only — use Alembic in prod).
+    checkfirst=True skips tables/types that already exist, preventing
+    duplicate key errors on container restart.
+    """
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all, checkfirst=True)
