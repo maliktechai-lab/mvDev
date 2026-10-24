@@ -80,7 +80,8 @@ def test_corrupt_when_wrong_keys(tmp_path, monkeypatch):
     assert result.status == ModelStatus.CORRUPT, (
         f"Expected CORRUPT (wrong key prefix) but got {result.status}: {result.message}"
     )
-    assert "Architecture mismatch" in (result.error or "")
+    assert result.error is not None
+    assert "spatial_branch" in (result.error or "")
 
 
 # ── 4. READY when valid checkpoint ────────────────────────────────────────

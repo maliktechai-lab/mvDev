@@ -16,16 +16,21 @@ Expected directory structure after preprocessing:
       fake/  *.jpg
 
 Run ml/datasets/prepare_ff.py to generate this structure from raw FF++ videos.
+
+Reproducibility
+---------------
+The dataset does NOT shuffle samples internally — shuffling is handled by
+the DataLoader (shuffle=True for train) so it is controlled by the
+PyTorch global seed set at training startup. This prevents the dataset
+object itself from being non-deterministic across runs.
 """
 
 from __future__ import annotations
 
 import os
-import random
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
@@ -42,6 +47,9 @@ class DeepfakeImageDataset(Dataset):
     """
     Dataset for image-based deepfake detection.
     Reads from a directory with real/ and fake/ subdirectories.
+
+    Samples are sorted deterministically — DataLoader shuffle controls
+    training randomness so the same seed always produces the same order.
     """
 
     def __init__(
@@ -52,6 +60,7 @@ class DeepfakeImageDataset(Dataset):
         max_per_class: Optional[int] = None,
     ):
         self.root = Path(root_dir) / split
+        self.split = split
         self.transform = get_training_transform(augment=(split == "train" and augment))
 
         real_dir = self.root / "real"
@@ -59,10 +68,12 @@ class DeepfakeImageDataset(Dataset):
 
         if not real_dir.exists() or not fake_dir.exists():
             raise FileNotFoundError(
-                f"Dataset not found at {self.root}. "
+                f"Dataset split '{split}' not found at {self.root}. "
+                "Expected real/ and fake/ subdirectories. "
                 "Run ml/datasets/prepare_ff.py first."
             )
 
+        # Sorted for determinism — DataLoader shuffles for training
         real_files = sorted([
             (str(p), LABEL_REAL)
             for p in real_dir.glob("*.jpg")
@@ -72,17 +83,26 @@ class DeepfakeImageDataset(Dataset):
             for p in fake_dir.glob("*.jpg")
         ])
 
-        # Optional cap per class (for quick experiments)
-        if max_per_class:
+        if len(real_files) == 0 and len(fake_files) == 0:
+            raise ValueError(
+                f"Dataset split '{split}' at {self.root} is empty. "
+                "No .jpg files found in real/ or fake/. "
+                "Check that prepare_ff.py completed successfully."
+            )
+
+        # Optional cap per class (for quick experiments / smoke tests)
+        if max_per_class is not None:
             real_files = real_files[:max_per_class]
             fake_files = fake_files[:max_per_class]
 
+        # Deterministic interleave: real first, then fake — no shuffle here
         self.samples: List[Tuple[str, int]] = real_files + fake_files
-        random.shuffle(self.samples)
 
-        n_real = sum(1 for _, l in self.samples if l == LABEL_REAL)
-        n_fake = sum(1 for _, l in self.samples if l == LABEL_FAKE)
-        print(f"[Dataset] {split}: {n_real} real, {n_fake} fake → {len(self.samples)} total")
+        n_real = len(real_files)
+        n_fake = len(fake_files)
+        print(
+            f"[Dataset/{split}] {n_real} real + {n_fake} fake = {len(self.samples)} samples"
+        )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -94,14 +114,14 @@ class DeepfakeImageDataset(Dataset):
             tensor = self.transform(img)
         except Exception as e:
             print(f"[Dataset] Warning: failed to load {path}: {e}")
-            # Return a blank image rather than crashing
+            # Return a blank tensor rather than crashing the DataLoader
             tensor = torch.zeros(3, 224, 224)
             label = LABEL_REAL
         return tensor, label
 
     def get_class_weights(self) -> torch.Tensor:
-        """Compute per-sample weights for WeightedRandomSampler (handles class imbalance)."""
-        labels = [l for _, l in self.samples]
+        """Per-sample weights for WeightedRandomSampler (handles class imbalance)."""
+        labels = [lbl for _, lbl in self.samples]
         n_real = labels.count(LABEL_REAL)
         n_fake = labels.count(LABEL_FAKE)
         total  = len(labels)
@@ -110,8 +130,15 @@ class DeepfakeImageDataset(Dataset):
         w_real = total / (2 * n_real) if n_real > 0 else 1.0
         w_fake = total / (2 * n_fake) if n_fake > 0 else 1.0
 
-        weights = [w_real if l == LABEL_REAL else w_fake for l in labels]
+        weights = [w_real if lbl == LABEL_REAL else w_fake for lbl in labels]
         return torch.FloatTensor(weights)
+
+    @property
+    def class_balance(self) -> dict:
+        """Return class counts for verification."""
+        n_real = sum(1 for _, lbl in self.samples if lbl == LABEL_REAL)
+        n_fake = sum(1 for _, lbl in self.samples if lbl == LABEL_FAKE)
+        return {"real": n_real, "fake": n_fake, "total": len(self.samples)}
 
 
 def build_dataloaders(
@@ -119,9 +146,17 @@ def build_dataloaders(
     batch_size: int = 32,
     num_workers: int = 4,
     max_per_class: Optional[int] = None,
+    seed: int = 42,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Build train/val/test dataloaders.
+    Build train/val/test dataloaders with reproducible sampling.
+
+    Args:
+        dataset_root:  Path to processed dataset (containing train/val/test/).
+        batch_size:    Samples per batch.
+        num_workers:   DataLoader worker processes.
+        max_per_class: Cap per class (useful for smoke tests).
+        seed:          Seed for WeightedRandomSampler generator.
 
     Returns:
         (train_loader, val_loader, test_loader)
@@ -130,11 +165,14 @@ def build_dataloaders(
     val_ds   = DeepfakeImageDataset(dataset_root, "val",   augment=False, max_per_class=max_per_class)
     test_ds  = DeepfakeImageDataset(dataset_root, "test",  augment=False, max_per_class=max_per_class)
 
-    # Balanced sampling for training
+    # Reproducible balanced sampler for training
+    generator = torch.Generator()
+    generator.manual_seed(seed)
     sampler = WeightedRandomSampler(
         weights=train_ds.get_class_weights(),
         num_samples=len(train_ds),
         replacement=True,
+        generator=generator,
     )
 
     train_loader = DataLoader(

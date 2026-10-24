@@ -127,6 +127,7 @@ async def model_readiness():
 
     any_ready    = any(r.status == ModelStatus.READY    for r in results.values())
     any_corrupt  = any(r.status == ModelStatus.CORRUPT  for r in results.values())
+    any_dummy    = any(r.status == ModelStatus.DUMMY    for r in results.values())
     all_ready    = all(r.status == ModelStatus.READY    for r in results.values())
 
     if all_ready:
@@ -135,14 +136,22 @@ async def model_readiness():
         overall = "degraded"
     elif any_ready:
         overall = "partial"
+    elif any_dummy:
+        overall = "dummy"      # all found checkpoints are untrained dummies
     else:
         overall = "unavailable"
+
+    # Determine inference mode string
+    if settings.APP_ENV != "development":
+        inference_mode = "production"
+    elif any_dummy:
+        inference_mode = "development_dummy_weights"
+    else:
+        inference_mode = "development_random_weights"
 
     return {
         "overall": overall,
         "env": settings.APP_ENV,
-        "inference_mode": (
-            "production"  if settings.APP_ENV != "development" else "development_random_weights"
-        ),
+        "inference_mode": inference_mode,
         "models": models_out,
     }

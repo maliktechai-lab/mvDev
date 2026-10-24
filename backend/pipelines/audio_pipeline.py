@@ -170,77 +170,117 @@ class AudioInferencePipeline:
     default_retry_delay=30,
 )
 def run_audio_detection(self, job_id: str, audio_path: str) -> dict:
-    """Celery task: run audio detection and update job in DB."""
+    """
+    Celery task: run audio detection and update job status in DB.
+
+    Uses asyncio.run + shared AsyncSessionLocal (not create_async_engine per call).
+    Enforces model readiness gate before any heavy work.
+    Cleans up the uploaded audio file in a finally block.
+    """
     import asyncio
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    return asyncio.run(_run_audio_detection_async(self, job_id, audio_path))
+
+
+async def _run_audio_detection_async(task, job_id: str, audio_path: str) -> dict:
+    """Async implementation of the audio Celery task."""
     from sqlalchemy import select
+    from db.database import AsyncSessionLocal
     from db.models import DetectionJob, DetectionResult, JobStatus, Verdict
+    from core.model_readiness import check_audio_model, require_model_ready
 
-    logger.info(f"[Celery] Starting audio detection for job={job_id}")
+    logger.info(f"[Celery/audio] Starting detection for job={job_id}")
 
-    async def update_db(status, **result_kwargs):
-        from core.config import settings as cfg
-        engine  = create_async_engine(cfg.DATABASE_URL, pool_pre_ping=True)
-        Session = async_sessionmaker(engine, expire_on_commit=False)
+    # ── Model readiness gate — fail fast ───────────────────────────────────
+    try:
+        readiness = check_audio_model()
+        require_model_ready(readiness)
+    except RuntimeError as exc:
+        logger.error(f"[Celery/audio] Model not ready for job={job_id}: {exc}")
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
+            job = res.scalar_one_or_none()
+            if job:
+                job.status    = JobStatus.FAILED
+                job.error_msg = str(exc)
+                job.ended_at  = datetime.now(timezone.utc)
+                await db.commit()
+        raise task.retry(exc=exc)
 
-        async with Session() as db:
+    try:
+        # ── Mark RUNNING ───────────────────────────────────────────────────
+        async with AsyncSessionLocal() as db:
             res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
             job = res.scalar_one_or_none()
             if not job:
-                return
-            job.status = status
-            if status == JobStatus.RUNNING:
-                job.started_at = datetime.now(timezone.utc)
-            else:
-                job.ended_at = datetime.now(timezone.utc)
-
-            if result_kwargs:
-                verdict_str  = result_kwargs.get("verdict", "unknown")
-                verdict_enum = Verdict[verdict_str.upper()] if verdict_str in ("real", "fake") else Verdict.UNKNOWN
-                db_result = DetectionResult(
-                    job_id=job.id,
-                    verdict=verdict_enum,
-                    confidence=result_kwargs.get("confidence", 0.0),
-                    branch_scores=result_kwargs.get("branch_scores"),
-                    chunk_scores=result_kwargs.get("chunk_scores"),
-                    duration_sec=result_kwargs.get("duration_sec"),
-                    raw_output={
-                        "fake_probability": result_kwargs.get("fake_probability"),
-                        "real_probability": result_kwargs.get("real_probability"),
-                        "suspicious_timestamps": result_kwargs.get("suspicious_timestamps", []),
-                    },
-                )
-                db.add(db_result)
+                logger.error(f"[Celery/audio] Job {job_id} not found")
+                return {"job_id": job_id, "error": "job not found"}
+            job.status     = JobStatus.RUNNING
+            job.started_at = datetime.now(timezone.utc)
             await db.commit()
-        await engine.dispose()
 
-    try:
-        asyncio.run(update_db(JobStatus.RUNNING))
-
+        # ── Run inference ──────────────────────────────────────────────────
         pipeline = AudioInferencePipeline()
         result   = pipeline.run(audio_path)
 
         if result.error:
             raise RuntimeError(result.error)
 
-        asyncio.run(update_db(
-            JobStatus.COMPLETED,
-            verdict=result.verdict,
-            confidence=result.confidence,
-            fake_probability=result.fake_probability,
-            real_probability=result.real_probability,
-            branch_scores=result.branch_scores,
-            chunk_scores=result.chunk_scores,
-            duration_sec=result.duration_sec,
-            suspicious_timestamps=result.suspicious_timestamps,
-        ))
+        # ── Persist result ─────────────────────────────────────────────────
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
+            job = res.scalar_one_or_none()
+            if not job:
+                logger.error(f"[Celery/audio] Job {job_id} disappeared before result save")
+                return {"job_id": job_id, "error": "job not found after inference"}
 
-        return {"job_id": job_id, "verdict": result.verdict}
+            verdict_str  = result.verdict
+            verdict_enum = Verdict[verdict_str.upper()] if verdict_str in ("real", "fake") else Verdict.UNKNOWN
+
+            db_result = DetectionResult(
+                job_id=job.id,
+                verdict=verdict_enum,
+                confidence=result.confidence,
+                branch_scores=result.branch_scores,
+                chunk_scores=result.chunk_scores,
+                duration_sec=result.duration_sec,
+                raw_output={
+                    "fake_probability":     result.fake_probability,
+                    "real_probability":     result.real_probability,
+                    "suspicious_timestamps": result.suspicious_timestamps,
+                },
+            )
+            db.add(db_result)
+            job.status   = JobStatus.COMPLETED
+            job.ended_at = datetime.now(timezone.utc)
+            await db.commit()
+
+        logger.info(f"[Celery/audio] Detection complete for job={job_id}")
+        return {"job_id": job_id, "verdict": result.verdict, "confidence": result.confidence}
 
     except Exception as exc:
-        logger.exception(f"[Celery] Audio detection failed for job={job_id}: {exc}")
-        asyncio.run(update_db(JobStatus.FAILED))
-        raise self.retry(exc=exc)
+        logger.exception(f"[Celery/audio] Detection failed for job={job_id}: {exc}")
+        try:
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(select(DetectionJob).where(DetectionJob.id == job_id))
+                job = res.scalar_one_or_none()
+                if job:
+                    job.status    = JobStatus.FAILED
+                    job.error_msg = str(exc)
+                    job.ended_at  = datetime.now(timezone.utc)
+                    await db.commit()
+        except Exception as db_exc:
+            logger.error(f"[Celery/audio] Failed to persist FAILED status: {db_exc}")
+        raise task.retry(exc=exc)
+
+    finally:
+        # ── Clean up temp audio file ───────────────────────────────────────
+        try:
+            p = Path(audio_path)
+            if p.exists():
+                p.unlink()
+                logger.debug(f"[Celery/audio] Cleaned up: {audio_path}")
+        except Exception as cleanup_exc:
+            logger.warning(f"[Celery/audio] Could not remove temp file {audio_path}: {cleanup_exc}")
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────

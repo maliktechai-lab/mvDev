@@ -48,11 +48,15 @@ def _load_or_raise(
     """
     Load a model from checkpoint.
 
-    - READY:       Returns model loaded from checkpoint.
-    - UNAVAILABLE (dev): Returns random-weight model with .random_weights=True attribute.
-    - UNAVAILABLE (prod): Raises RuntimeError.
-    - CORRUPT (any env): Raises RuntimeError.
+    - READY:            Returns model loaded from checkpoint (model.random_weights=False).
+    - DUMMY (dev):      Returns random-weight model with model.random_weights=True.
+    - DUMMY (prod):     Raises RuntimeError.
+    - UNAVAILABLE (dev):Returns random-weight model with model.random_weights=True.
+    - UNAVAILABLE (prod):Raises RuntimeError.
+    - CORRUPT (any):    Raises RuntimeError.
     """
+    from core.model_readiness import ModelStatus, _verify_checkpoint, _REQUIRED_PREFIXES
+
     p = Path(ckpt_path)
 
     if not p.exists():
@@ -82,9 +86,39 @@ def _load_or_raise(
     try:
         model = load_fn(ckpt_path, device=device)
         model.eval()
-        model.random_weights = False  # type: ignore[attr-defined]
-        logger.success(f"Model '{model_name}' loaded from checkpoint: {ckpt_path}")
+
+        # Check if it's a dummy checkpoint
+        try:
+            raw = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+            is_dummy = isinstance(raw, dict) and raw.get("dummy") is True
+        except Exception:
+            is_dummy = False
+
+        if is_dummy:
+            if settings.APP_ENV != "development":
+                raise RuntimeError(
+                    f"Model '{model_name}': checkpoint at '{ckpt_path}' is a dummy "
+                    "(random-weight, not trained) checkpoint. "
+                    "Production inference requires a trained checkpoint."
+                )
+            logger.warning(
+                f"\n{'='*70}\n"
+                f"[DEV MODE] Model '{model_name}' is running on a DUMMY checkpoint.\n"
+                f"Weights are RANDOM — predictions are MEANINGLESS.\n"
+                f"This checkpoint was created by create_dummy_checkpoint.py.\n"
+                f"{'='*70}"
+            )
+            model.random_weights = True  # type: ignore[attr-defined]
+        else:
+            model.random_weights = False  # type: ignore[attr-defined]
+
+        logger.success(
+            f"Model '{model_name}' loaded from checkpoint: {ckpt_path}"
+            + (" [DUMMY — random weights]" if is_dummy else "")
+        )
         return model
+    except RuntimeError:
+        raise
     except Exception as exc:
         raise RuntimeError(
             f"Model '{model_name}': checkpoint at '{ckpt_path}' exists but "

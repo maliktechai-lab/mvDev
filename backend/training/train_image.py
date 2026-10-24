@@ -255,6 +255,102 @@ def _load_yaml_config(path: str) -> dict:
         return {}
 
 
+def run_smoke_test(device: str, checkpoint_dir: str, canonical_name: str) -> None:
+    """
+    Smoke test: verify the training loop is functional without a real dataset.
+
+    Creates a small synthetic dataset (16 random images per class), runs 5
+    mini-batches, checks that loss decreases, saves a checkpoint, and reloads
+    it with strict=True to verify the format.
+
+    This is NOT a substitute for real training. It only confirms the code
+    paths are intact.
+    """
+    import tempfile
+    import torch.nn.functional as F
+
+    logger.info("=" * 60)
+    logger.info("SMOKE TEST MODE — synthetic data, 5 gradient steps")
+    logger.info("This confirms code paths work. Not a real training run.")
+    logger.info("=" * 60)
+
+    BATCH  = 4
+    STEPS  = 5
+    N_IMGS = 16   # per class
+
+    # ── Synthetic dataset ──────────────────────────────────────────────────
+    imgs   = torch.randn(N_IMGS * 2, 3, 224, 224)
+    labels = torch.cat([torch.zeros(N_IMGS, dtype=torch.long),
+                        torch.ones(N_IMGS,  dtype=torch.long)])
+
+    model = build_image_model(device=device)
+    model.train()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    criterion = DeepSupervisionLoss(label_smoothing=0.0)
+
+    losses: list[float] = []
+    for step in range(STEPS):
+        idx    = torch.randperm(len(imgs))[:BATCH]
+        x      = imgs[idx].to(device)
+        y      = labels[idx].to(device)
+        out    = model(x, return_branch_scores=True)
+        loss   = criterion(
+            out["logits"], out["aux_spatial"],
+            out["aux_frequency"], out["aux_attention"], y,
+        )
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.item()))
+        logger.info(f"  step {step + 1}/{STEPS}  loss={loss.item():.4f}")
+
+    # ── Check loss decreased ───────────────────────────────────────────────
+    first_loss = losses[0]
+    last_loss  = losses[-1]
+    decreased  = last_loss < first_loss
+    logger.info(f"Loss: {first_loss:.4f} → {last_loss:.4f}  decreased={decreased}")
+    if not decreased:
+        logger.warning(
+            "Loss did not decrease over 5 steps. This can happen with random "
+            "data — it is not necessarily a bug. Run with real data to confirm."
+        )
+
+    # ── Save checkpoint ────────────────────────────────────────────────────
+    ckpt_path = Path(checkpoint_dir)
+    ckpt_path.mkdir(parents=True, exist_ok=True)
+    smoke_file = ckpt_path / "smoke_test.pth"
+
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "epoch": 0,
+            "metrics": {"loss": last_loss},
+            "smoke_test": True,
+        },
+        str(smoke_file),
+    )
+    logger.info(f"Checkpoint saved: {smoke_file}")
+
+    # ── Reload strictly ────────────────────────────────────────────────────
+    loaded = torch.load(str(smoke_file), map_location="cpu", weights_only=True)
+    reload_model = build_image_model(device="cpu")
+    missing, unexpected = reload_model.load_state_dict(
+        loaded["model_state_dict"], strict=True
+    )
+    assert len(missing) == 0,    f"Strict load: missing keys: {missing[:5]}"
+    assert len(unexpected) == 0, f"Strict load: unexpected keys: {unexpected[:5]}"
+    logger.success("Checkpoint reloaded with strict=True — format verified.")
+
+    # ── Clean up smoke checkpoint ──────────────────────────────────────────
+    smoke_file.unlink()
+    logger.info("Smoke checkpoint removed (not a trained model).")
+
+    logger.success("SMOKE TEST PASSED")
+    logger.info(
+        "To train for real: provide --dataset_root and remove --smoke-test"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train DeepGuard-Image model from scratch")
     parser.add_argument("--config",        default=None,
@@ -274,6 +370,13 @@ def main():
     parser.add_argument("--checkpoint_dir",   default=None)
     parser.add_argument("--canonical_name",   default=None,
                         help="Canonical checkpoint filename (e.g. deepguard_image.pth)")
+    parser.add_argument("--smoke-test", "--smoke_test", action="store_true",
+                        dest="smoke_test",
+                        help="Run a 5-step synthetic smoke test (no dataset needed). "
+                             "Verifies code paths and checkpoint save/load. "
+                             "Does NOT produce a usable model.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for DataLoader sampler reproducibility")
     args = parser.parse_args()
 
     # ── Merge YAML → CLI (CLI wins) ────────────────────────────────────────
