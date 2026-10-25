@@ -58,3 +58,6 @@ backend/db/alembic.ini
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Local datasets and processed training data
+data/
