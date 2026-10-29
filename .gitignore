@@ -32,6 +32,10 @@ node_modules/
 frontend/dist/
 frontend/build/
 frontend/.next/
+frontend-blink/dist/
+
+# Friend's reference copy (not part of this repo)
+friend frontend/
 
 # Docker volumes
 postgres_data/

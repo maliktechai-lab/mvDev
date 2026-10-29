@@ -27,6 +27,35 @@ class BranchScores(BaseModel):
     prosody: Optional[float] = None
 
 
+class FrameScoreResponse(BaseModel):
+    """Per-frame score entry for video results.
+
+    ``score`` is ``None`` when the frame could not be scored because no face
+    was detected (``face_status="not_found"``) or the face detector raised an
+    exception (``face_status="failed"``).  A missing score must never be
+    treated as 0, 0.5, or any other fabricated value.
+    """
+    frame: int
+    score: Optional[float]           # null ↔ unscored frame
+    timestamp: float
+    face_status: Optional[str] = None  # "detected" | "not_found" | "failed"
+    window_count: Optional[int] = None
+
+
+class VideoRawOutput(BaseModel):
+    """Typed raw output fields for video detection results.
+
+    Exposed in the API so the frontend does not need to cast to unknown.
+    All fields are optional — older records may predate some fields.
+    """
+    fake_probability: Optional[float] = None
+    real_probability: Optional[float] = None
+    suspicious_timestamps: Optional[List[float]] = None
+    faces_not_found: Optional[int] = None
+    faces_failed: Optional[int] = None
+    scored_frames_count: Optional[int] = None
+
+
 class ResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -34,12 +63,13 @@ class ResultResponse(BaseModel):
     verdict: Verdict
     confidence: float
     branch_scores: Optional[dict]
-    frame_scores: Optional[list]
+    frame_scores: Optional[List[FrameScoreResponse]]
     chunk_scores: Optional[list]
     heatmap_url: Optional[str]
     duration_sec: Optional[float]
     frames_analyzed: Optional[int]
     faces_detected: Optional[int]
+    raw_output: Optional[dict]  # Stored as freeform JSON; VideoRawOutput for video results
     created_at: datetime
 
 

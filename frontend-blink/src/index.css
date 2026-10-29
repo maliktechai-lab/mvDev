@@ -1,0 +1,269 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ─── BLINK DESIGN TOKENS ────────────────────────────────────── */
+:root {
+  --black:     #000000;
+  --bg:        #030305;
+  --bg-1:      #080809;
+  --bg-2:      #0d0d10;
+
+  --white:     #ffffff;
+  --off-white: #e8e8f0;
+  --grey-1:    #a0a0b0;
+  --grey-2:    #505060;
+  --grey-3:    #282830;
+  --grey-4:    #141418;
+
+  /* Single accent — electric white glow */
+  --accent:      #ffffff;
+  --accent-dim:  rgba(255,255,255,0.06);
+  --accent-mid:  rgba(255,255,255,0.15);
+
+  /* Status */
+  --red:       #ff2020;
+  --red-dim:   rgba(255,32,32,0.10);
+  --green:     #00ff88;
+  --green-dim: rgba(0,255,136,0.10);
+
+  /* Borders */
+  --border:    rgba(255,255,255,0.06);
+  --border-2:  rgba(255,255,255,0.12);
+  --border-3:  rgba(255,255,255,0.22);
+
+  /* Glitch colors — RGB split */
+  --glitch-r:  rgba(255, 0,   60,  0.8);
+  --glitch-g:  rgba(0,   255, 120, 0.8);
+  --glitch-b:  rgba(0,   120, 255, 0.8);
+
+  /* Typography */
+  --font-display: 'Syne', sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+  --font-body:    'Inter', sans-serif;
+}
+
+/* ─── RESET ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  background: var(--black);
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--black);
+  color: var(--white);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* Minimal scrollbar */
+::-webkit-scrollbar { width: 2px; }
+::-webkit-scrollbar-track { background: var(--black); }
+::-webkit-scrollbar-thumb { background: var(--grey-3); }
+
+/* Hide cursor globally */
+
+/* ─── SELECTION ──────────────────────────────────────────────── */
+::selection { background: rgba(255,255,255,0.15); color: var(--white); }
+
+/* ─── FOCUS ──────────────────────────────────────────────────── */
+:focus-visible { outline: 1px solid rgba(255,255,255,0.4); outline-offset: 3px; }
+
+/* ─── NOISE OVERLAY ──────────────────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+  opacity: 0.032;
+  pointer-events: none;
+  z-index: 9998;
+  mix-blend-mode: overlay;
+  animation: noise-shift 0.5s steps(1) infinite;
+}
+
+/* ─── KEYFRAMES ──────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+@keyframes noise-shift {
+  0%   { background-position: 0 0; }
+  25%  { background-position: -10px 5px; }
+  50%  { background-position: 5px -8px; }
+  75%  { background-position: -5px 10px; }
+  100% { background-position: 8px -3px; }
+}
+
+/* Core glitch — horizontal slice displacement */
+@keyframes glitch-clip {
+  0%   { clip-path: inset(40% 0 60% 0); transform: translate(-4px, 0); }
+  5%   { clip-path: inset(10% 0 85% 0); transform: translate(4px, 0); }
+  10%  { clip-path: inset(70% 0 20% 0); transform: translate(-2px, 0); }
+  15%  { clip-path: inset(30% 0 55% 0); transform: translate(3px, 0); }
+  20%  { clip-path: inset(0% 0 100% 0); transform: translate(0, 0); }
+  100% { clip-path: inset(0% 0 100% 0); transform: translate(0, 0); }
+}
+
+@keyframes glitch-clip-2 {
+  0%   { clip-path: inset(65% 0 20% 0); transform: translate(4px, 0); }
+  5%   { clip-path: inset(20% 0 60% 0); transform: translate(-4px, 0); }
+  10%  { clip-path: inset(5%  0 90% 0); transform: translate(2px,  0); }
+  15%  { clip-path: inset(80% 0 5%  0); transform: translate(-3px, 0); }
+  20%  { clip-path: inset(0%  0 100% 0); transform: translate(0, 0); }
+  100% { clip-path: inset(0%  0 100% 0); transform: translate(0, 0); }
+}
+
+/* RGB channel split */
+@keyframes rgb-r {
+  0%, 90%, 100% { transform: translate(0, 0); opacity: 0; }
+  92%  { transform: translate(-6px, 1px); opacity: 0.8; }
+  94%  { transform: translate(4px, -1px); opacity: 0.6; }
+  96%  { transform: translate(-3px, 0); opacity: 0.7; }
+  98%  { transform: translate(0, 0); opacity: 0; }
+}
+
+@keyframes rgb-b {
+  0%, 90%, 100% { transform: translate(0, 0); opacity: 0; }
+  92%  { transform: translate(6px, -1px); opacity: 0.8; }
+  94%  { transform: translate(-4px, 1px);  opacity: 0.6; }
+  96%  { transform: translate(3px, 0);     opacity: 0.7; }
+  98%  { transform: translate(0, 0);       opacity: 0; }
+}
+
+/* Scanline sweep */
+@keyframes scanline {
+  0%   { top: -10%; }
+  100% { top: 110%; }
+}
+
+/* Text flicker — like a dying CRT */
+@keyframes flicker {
+  0%, 95%, 100% { opacity: 1; }
+  96%  { opacity: 0.4; }
+  97%  { opacity: 1; }
+  98%  { opacity: 0.2; }
+  99%  { opacity: 1; }
+}
+
+/* Letter corrupt — swap to random char briefly */
+@keyframes char-corrupt {
+  0%, 100% { content: attr(data-char); }
+  50%      { content: attr(data-alt);  }
+}
+
+/* Reveal wipe upward */
+@keyframes reveal-up {
+  from { clip-path: inset(100% 0 0 0); }
+  to   { clip-path: inset(0% 0 0 0); }
+}
+
+/* Loader tear open */
+@keyframes tear-top {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-100%); }
+}
+@keyframes tear-bottom {
+  from { transform: translateY(0); }
+  to   { transform: translateY(100%); }
+}
+
+/* Pulse dot */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,0.4); }
+  50%       { opacity: 0.6; transform: scale(0.85); box-shadow: 0 0 0 6px rgba(255,255,255,0); }
+}
+
+/* Float */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-8px); }
+}
+
+/* Marquee */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* ─── UTILITY CLASSES ────────────────────────────────────────── */
+.container { max-width: 1320px; margin: 0 auto; padding: 0 40px; }
+
+.mono { font-family: var(--font-mono); }
+.display { font-family: var(--font-display); font-weight: 800; }
+
+/* Editorial divider */
+.rule { height: 1px; background: var(--border); }
+
+/* Glitch text effect — apply to any element */
+.glitch {
+  position: relative;
+  animation: flicker 6s infinite;
+}
+.glitch::before,
+.glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.glitch::before {
+  color: var(--glitch-r);
+  animation: glitch-clip   4s infinite steps(1);
+}
+.glitch::after {
+  color: var(--glitch-b);
+  animation: glitch-clip-2 4s infinite steps(1);
+  animation-delay: 0.1s;
+}
+
+/* Pill badge */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 100px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--border-2);
+  color: var(--grey-1);
+  background: rgba(255,255,255,0.04);
+}
+
+/* Live dot */
+.dot-live {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--white);
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
+/* Marquee track */
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee 18s linear infinite;
+}
+
+/* ─── RESPONSIVE ─────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .container { padding: 0 20px; }
+  html { cursor: auto; }
+  * { cursor: auto !important; }
+}

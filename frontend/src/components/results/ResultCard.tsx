@@ -297,7 +297,8 @@ export function ResultCard({ result, filename }: ResultCardProps) {
           </div>
         </div>
 
-        {/* Probability dials */}
+        {/* Probability dials — only shown for real/fake; unknown has no evidential basis */}
+        {result.verdict !== "unknown" && (
         <motion.div
           initial={{ opacity: 0, y: 15 }}
           animate={{ opacity: 1, y: 0 }}
@@ -346,6 +347,7 @@ export function ResultCard({ result, filename }: ResultCardProps) {
             </div>
           </div>
         </motion.div>
+        )}
       </div>
 
       {/* ── Branch scores ──────────────────────────────────────────────── */}

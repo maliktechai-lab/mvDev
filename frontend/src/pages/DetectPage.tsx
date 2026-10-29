@@ -417,8 +417,7 @@ export function DetectPage() {
   const hasResult = imageResult !== null || completedJob !== null;
   const videoResult = completedJob?.result;
   const frameScores = videoResult?.frame_scores ?? [];
-  const suspiciousTs = (completedJob?.result as { raw_output?: { suspicious_timestamps?: number[] } } | undefined)
-    ?.raw_output?.suspicious_timestamps ?? [];
+  const suspiciousTs = videoResult?.raw_output?.suspicious_timestamps ?? [];
 
   return (
     <div
@@ -579,8 +578,8 @@ export function DetectPage() {
                           job_id:           completedJob.id,
                           verdict:          completedJob.result.verdict,
                           confidence:       completedJob.result.confidence,
-                          fake_probability: (completedJob.result as { raw_output?: { fake_probability?: number } }).raw_output?.fake_probability ?? completedJob.result.confidence,
-                          real_probability: (completedJob.result as { raw_output?: { real_probability?: number } }).raw_output?.real_probability ?? (1 - completedJob.result.confidence),
+                          fake_probability: completedJob.result.raw_output?.fake_probability ?? completedJob.result.confidence,
+                          real_probability: completedJob.result.raw_output?.real_probability ?? (1 - completedJob.result.confidence),
                           faces_detected:   completedJob.result.faces_detected ?? 0,
                           branch_scores:    completedJob.result.branch_scores ?? {},
                           heatmap_url:      completedJob.result.heatmap_url ?? null,
@@ -608,8 +607,8 @@ export function DetectPage() {
                           job_id:           completedJob.id,
                           verdict:          completedJob.result.verdict,
                           confidence:       completedJob.result.confidence,
-                          fake_probability: (completedJob.result as { raw_output?: { fake_probability?: number } }).raw_output?.fake_probability ?? completedJob.result.confidence,
-                          real_probability: (completedJob.result as { raw_output?: { real_probability?: number } }).raw_output?.real_probability ?? (1 - completedJob.result.confidence),
+                          fake_probability: completedJob.result.raw_output?.fake_probability ?? completedJob.result.confidence,
+                          real_probability: completedJob.result.raw_output?.real_probability ?? (1 - completedJob.result.confidence),
                           faces_detected:   0,
                           branch_scores:    completedJob.result.branch_scores ?? {},
                           heatmap_url:      null,

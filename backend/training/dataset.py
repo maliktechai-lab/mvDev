@@ -89,6 +89,18 @@ class DeepfakeImageDataset(Dataset):
                 "No .jpg files found in real/ or fake/. "
                 "Check that prepare_ff.py completed successfully."
             )
+        if len(real_files) == 0:
+            raise ValueError(
+                f"Dataset split '{split}' at {self.root} contains no REAL samples. "
+                "Both classes are required for a valid binary evaluation protocol. "
+                "Check that real/ has .jpg files."
+            )
+        if len(fake_files) == 0:
+            raise ValueError(
+                f"Dataset split '{split}' at {self.root} contains no FAKE samples. "
+                "Both classes are required for a valid binary evaluation protocol. "
+                "Check that fake/ has .jpg files."
+            )
 
         # Optional cap per class (for quick experiments / smoke tests)
         if max_per_class is not None:
@@ -111,12 +123,18 @@ class DeepfakeImageDataset(Dataset):
         path, label = self.samples[idx]
         try:
             img = Image.open(path).convert("RGB")
+        except Exception as e:
+            raise RuntimeError(
+                f"[Dataset/{self.split}] Failed to decode image at index {idx}: "
+                f"{path!r} — {type(e).__name__}: {e}"
+            ) from e
+        try:
             tensor = self.transform(img)
         except Exception as e:
-            print(f"[Dataset] Warning: failed to load {path}: {e}")
-            # Return a blank tensor rather than crashing the DataLoader
-            tensor = torch.zeros(3, 224, 224)
-            label = LABEL_REAL
+            raise RuntimeError(
+                f"[Dataset/{self.split}] Transform failed for image at index {idx}: "
+                f"{path!r} — {type(e).__name__}: {e}"
+            ) from e
         return tensor, label
 
     def get_class_weights(self) -> torch.Tensor:

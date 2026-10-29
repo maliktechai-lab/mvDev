@@ -90,7 +90,19 @@ def validate_only(split_dir: Path) -> None:
                   f"{len(pairs_by_split[a] & pairs_by_split[b])} overlapping pairs")
     print(f"Total distinct source IDs: {len(id_to_split)}")
     print(f"Total distinct unordered pairs: {len(pair_to_split)}")
-    print("PASS: official split files are internally consistent.")
+    print(
+        "PASS: split JSON files parsed successfully.\n"
+        "Checks performed:\n"
+        "  - JSON parsing (valid JSON, non-empty list of pairs)\n"
+        "  - Malformed pairs (each entry is a 2-element list of numeric IDs in 000..999)\n"
+        "  - Duplicate pairs (no unordered pair appears twice within the same split file)\n"
+        "  - Video-ID overlap across splits (no ID assigned to more than one split)\n"
+        "Not checked by this validator:\n"
+        "  - Release authenticity or provenance of the split files\n"
+        "  - Full dataset completeness (whether all expected IDs are present)\n"
+        "  - Person-identity independence between splits\n"
+        "  - Near-duplicate or scene-level independence between splits"
+    )
 
 
 def list_videos(folder: Path) -> List[Path]:

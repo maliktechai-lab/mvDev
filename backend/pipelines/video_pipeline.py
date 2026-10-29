@@ -44,12 +44,19 @@ frame_transform = T.Compose([
 
 # ── Result types ───────────────────────────────────────────────────────────
 
+class FaceDetectionStatus:
+    """Explicit status codes for face detection on a single frame."""
+    DETECTED  = "detected"   # face crop was used
+    NOT_FOUND = "not_found"  # no face found; frame skipped (not scored)
+    FAILED    = "failed"     # detector raised an exception
+
+
 @dataclass
 class FrameDetectionResult:
-    frame_index: int
-    timestamp_sec: float
+    frame_index:      int
+    timestamp_sec:    float
     fake_probability: float
-    has_face: bool
+    face_status:      str   # one of FaceDetectionStatus constants
 
 
 @dataclass
@@ -61,6 +68,8 @@ class VideoDetectionResult:
     frames_analyzed: int
     duration_sec: float
     faces_detected: int
+    faces_not_found: int
+    faces_failed: int
     frame_scores: List[Dict]
     branch_scores: Dict
     heatmap_path: Optional[str]
@@ -99,7 +108,8 @@ class VideoInferencePipeline:
                 verdict="unknown", confidence=0.0,
                 fake_probability=0.0, real_probability=0.0,
                 frames_analyzed=0, duration_sec=0.0,
-                faces_detected=0, frame_scores=[],
+                faces_detected=0, faces_not_found=0, faces_failed=0,
+                frame_scores=[],
                 branch_scores={}, heatmap_path=None,
                 heatmap_url=None, suspicious_timestamps=[],
                 error=str(e),
@@ -118,106 +128,183 @@ class VideoInferencePipeline:
 
         logger.info(f"Video: {meta.duration_sec:.1f}s, {len(frames)} frames extracted")
 
-        # ── 2. Face detection per frame ────────────────────────────────────
-        detector    = get_face_detector(self.device)
-        face_frames = []    # PIL images of detected faces (or full frame fallback)
-        face_count  = 0
+        # ── 2. Face detection per frame — explicit per-frame status ────────
+        # For each frame we record the face status and, when a face was
+        # detected, the corresponding PIL crop for scoring.
+        #
+        # Frames with no face (NOT_FOUND or FAILED) are excluded from model
+        # inference and from the scored-frame list.  Their absence is
+        # represented explicitly in the output — no fake score is invented
+        # for a missing face.
+        face_statuses: List[str] = []   # parallel to `frames`
+        scoreable_indices: List[int] = []   # indices into `frames` that have a face crop
+        face_crops: List = []               # PIL crops for scoreable frames only
 
-        for frame in frames:
-            faces = detector.detect(frame.image)
+        detector = get_face_detector(self.device)
+
+        for frame_idx, frame in enumerate(frames):
+            try:
+                faces = detector.detect(frame.image)
+            except Exception as exc:
+                logger.warning(
+                    f"Face detector raised for frame {frame_idx}: {exc}"
+                )
+                face_statuses.append(FaceDetectionStatus.FAILED)
+                continue
+
             if faces:
-                face_frames.append(faces[0].crop)  # Use primary face
-                face_count += 1
+                face_statuses.append(FaceDetectionStatus.DETECTED)
+                scoreable_indices.append(frame_idx)
+                face_crops.append(faces[0].crop)
             else:
-                face_frames.append(frame.image)    # Fallback: full frame
+                face_statuses.append(FaceDetectionStatus.NOT_FOUND)
 
-        logger.info(f"Faces detected in {face_count}/{len(frames)} frames")
+        face_count     = face_statuses.count(FaceDetectionStatus.DETECTED)
+        not_found_count = face_statuses.count(FaceDetectionStatus.NOT_FOUND)
+        failed_count   = face_statuses.count(FaceDetectionStatus.FAILED)
 
-        # ── 3. Convert frames to tensors ───────────────────────────────────
-        frame_tensors = [frame_transform(img) for img in face_frames]  # list of (3,224,224)
+        logger.info(
+            f"Face detection: {face_count} detected, "
+            f"{not_found_count} not found, {failed_count} failed "
+            f"(out of {len(frames)} frames)"
+        )
 
-        # ── 4. Run model in batches of BATCH_SIZE sequences ───────────────
-        all_frame_scores: List[float] = []
+        # ── 3. Convert scoreable frames to tensors ─────────────────────────
+        frame_tensors = [frame_transform(crop) for crop in face_crops]
+
+        # ── 4. Indexed accumulation — one bucket per scoreable frame ───────
+        #
+        # We slide a window of BATCH_SIZE frames over the scoreable frames.
+        # The model returns one frame-level score per position in the window.
+        # Each score is accumulated into the bucket for the *original frame
+        # index* it came from, so every contributing window is averaged out.
+        #
+        # score_accum[scoreable_indices[k]] += model_frame_score_at_position_k
+        # score_count[scoreable_indices[k]] += 1
+
+        # Keys are original frame indices; values accumulate window scores.
+        score_accum: Dict[int, float] = {}
+        score_count: Dict[int, int]   = {}
         all_branch_scores: List[Dict] = []
         overall_fake_probs: List[float] = []
 
-        # Slide a window of BATCH_SIZE frames across the video
-        window = min(self.BATCH_SIZE, len(frame_tensors))
-        stride = max(1, window // 2)
+        if frame_tensors:
+            window = min(self.BATCH_SIZE, len(frame_tensors))
+            stride = max(1, window // 2)
 
-        i = 0
-        while i + window <= len(frame_tensors):
-            batch_frames = frame_tensors[i:i + window]
-            seq = torch.stack(batch_frames).unsqueeze(0).to(self.device)  # (1, T, 3, 224, 224)
+            i = 0
+            while i + window <= len(frame_tensors):
+                batch_frames = frame_tensors[i : i + window]
+                seq = torch.stack(batch_frames).unsqueeze(0).to(self.device)
 
-            with torch.no_grad():
-                out = model(seq, return_branch_scores=True)
+                with torch.no_grad():
+                    out = model(seq, return_branch_scores=True)
 
-            fake_prob   = float(out["probs"][0, 1])
-            frame_sc    = out["frame_scores"][0].tolist()  # T scores
-            branch_sc   = out.get("branch_scores", {})
+                fake_prob  = float(out["probs"][0, 1])
+                window_frame_scores = out["frame_scores"][0].tolist()  # length == window
+                branch_sc  = out.get("branch_scores", {})
 
-            overall_fake_probs.append(fake_prob)
-            all_frame_scores.extend(frame_sc)
-            all_branch_scores.append(branch_sc)
-            i += stride
+                overall_fake_probs.append(fake_prob)
+                all_branch_scores.append(branch_sc)
 
-        # Handle remaining frames if any
-        if not overall_fake_probs:
-            seq = torch.stack(frame_tensors[:window]).unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                out = model(seq, return_branch_scores=True)
-            overall_fake_probs = [float(out["probs"][0, 1])]
-            all_frame_scores   = out["frame_scores"][0].tolist()
-            all_branch_scores  = [out.get("branch_scores", {})]
+                # Accumulate each position's score back to its original frame index
+                for pos, frame_score in enumerate(window_frame_scores):
+                    original_idx = scoreable_indices[i + pos]
+                    score_accum[original_idx] = score_accum.get(original_idx, 0.0) + frame_score
+                    score_count[original_idx] = score_count.get(original_idx, 0) + 1
 
-        # ── 5. Aggregate scores ────────────────────────────────────────────
-        # Trim/pad frame scores to match extracted frames
-        all_frame_scores = all_frame_scores[:len(frames)]
-        while len(all_frame_scores) < len(frames):
-            all_frame_scores.append(all_frame_scores[-1] if all_frame_scores else 0.5)
+                i += stride
 
-        # Average branch scores across windows
-        avg_branch = {}
+            # Handle remaining frames that didn't fill a full window
+            remainder_start = i
+            if remainder_start < len(frame_tensors):
+                batch_frames = frame_tensors[remainder_start:]
+                actual_window = len(batch_frames)
+                seq = torch.stack(batch_frames).unsqueeze(0).to(self.device)
+
+                with torch.no_grad():
+                    out = model(seq, return_branch_scores=True)
+
+                fake_prob  = float(out["probs"][0, 1])
+                window_frame_scores = out["frame_scores"][0].tolist()[:actual_window]
+                branch_sc  = out.get("branch_scores", {})
+
+                overall_fake_probs.append(fake_prob)
+                all_branch_scores.append(branch_sc)
+
+                for pos, frame_score in enumerate(window_frame_scores):
+                    original_idx = scoreable_indices[remainder_start + pos]
+                    score_accum[original_idx] = score_accum.get(original_idx, 0.0) + frame_score
+                    score_count[original_idx] = score_count.get(original_idx, 0) + 1
+
+        # ── 5. Compute per-original-frame averaged scores ──────────────────
+        # Frames without a face are explicitly marked as unscored (null).
+        frame_score_list = []
+        for orig_idx, frame in enumerate(frames):
+            status = face_statuses[orig_idx]
+            if orig_idx in score_accum and score_count[orig_idx] > 0:
+                avg_score = score_accum[orig_idx] / score_count[orig_idx]
+                frame_score_list.append({
+                    "frame":       orig_idx,
+                    "score":       round(avg_score, 4),
+                    "timestamp":   round(frame.timestamp_sec, 2),
+                    "face_status": status,
+                    "window_count": score_count[orig_idx],
+                })
+            else:
+                # Frame was not scored — face absent or detector failed
+                frame_score_list.append({
+                    "frame":       orig_idx,
+                    "score":       None,
+                    "timestamp":   round(frame.timestamp_sec, 2),
+                    "face_status": status,
+                    "window_count": 0,
+                })
+
+        # ── 6. Aggregate branch scores and final verdict ───────────────────
+        avg_branch: Dict = {}
         if all_branch_scores:
             keys = all_branch_scores[0].keys()
             for k in keys:
                 vals = [d[k] for d in all_branch_scores if k in d]
                 avg_branch[k] = float(np.mean(vals)) if vals else 0.0
 
-        # Final fake probability: max of sliding-window scores (conservative)
-        final_fake_prob = float(np.mean(overall_fake_probs))
-        verdict         = "fake" if final_fake_prob >= settings.IMAGE_CONFIDENCE_THRESHOLD else "real"
-        confidence      = max(final_fake_prob, 1.0 - final_fake_prob)
+        if overall_fake_probs:
+            final_fake_prob = float(np.mean(overall_fake_probs))
+            verdict    = "fake" if final_fake_prob >= settings.IMAGE_CONFIDENCE_THRESHOLD else "real"
+            confidence = max(final_fake_prob, 1.0 - final_fake_prob)
+        else:
+            # No frames had detectable faces — cannot determine a verdict.
+            # Setting verdict="real" here would be a false claim.
+            logger.warning(
+                "No frames were scored (no faces detected or all failed). "
+                "Verdict is unknown."
+            )
+            final_fake_prob = 0.0
+            verdict    = "unknown"
+            confidence = 0.0
 
-        # Build per-frame score list for DB storage
-        frame_score_list = [
-            {
-                "frame":     i,
-                "score":     round(score, 4),
-                "timestamp": round(frames[i].timestamp_sec, 2) if i < len(frames) else 0.0,
-            }
-            for i, score in enumerate(all_frame_scores)
-        ]
-
-        # Suspicious timestamps (fake_prob > 0.7)
+        # Suspicious timestamps: only include frames that were actually scored
         suspicious = [
             fs["timestamp"]
             for fs in frame_score_list
-            if fs["score"] > 0.7
+            if fs["score"] is not None and fs["score"] > 0.7
         ]
 
-        # ── 6. GradCAM on most suspicious frame ───────────────────────────
+        # ── 7. GradCAM on most suspicious scored frame ─────────────────────
         heatmap_path = None
         heatmap_url  = None
 
-        if generate_heatmap and frame_score_list:
+        scored_entries = [fs for fs in frame_score_list if fs["score"] is not None]
+        if generate_heatmap and scored_entries:
             try:
-                most_suspicious_idx = int(np.argmax(all_frame_scores))
-                most_suspicious_img = face_frames[most_suspicious_idx]
-                most_suspicious_tensor = frame_tensors[most_suspicious_idx].unsqueeze(0).to(self.device)
+                most_suspicious_entry = max(scored_entries, key=lambda x: x["score"])
+                most_suspicious_orig_idx = most_suspicious_entry["frame"]
+                # Resolve back to the position in the scoreable list
+                scoreable_pos = scoreable_indices.index(most_suspicious_orig_idx)
+                most_suspicious_img    = face_crops[scoreable_pos]
+                most_suspicious_tensor = frame_tensors[scoreable_pos].unsqueeze(0).to(self.device)
 
-                # Use image model's GradCAM (spatial branch target)
                 gradcam = get_gradcam()
                 _, heatmap_path = gradcam.generate(most_suspicious_tensor, most_suspicious_img)
                 fname       = Path(heatmap_path).name
@@ -228,17 +315,23 @@ class VideoInferencePipeline:
         logger.info(
             f"Video detection done: verdict={verdict} "
             f"fake_prob={final_fake_prob:.3f} "
-            f"frames={len(frames)} suspicious={len(suspicious)}"
+            f"frames={len(frames)} scored={len(scored_entries)} "
+            f"suspicious={len(suspicious)}"
         )
 
         return VideoDetectionResult(
             verdict=verdict,
             confidence=confidence,
             fake_probability=final_fake_prob,
-            real_probability=1.0 - final_fake_prob,
+            # When verdict is unknown (no scored frames), neither probability
+            # has any evidential basis.  Both are 0.0 rather than 1.0 - 0.0 = 1.0,
+            # which would wrongly imply the video is real.
+            real_probability=0.0 if verdict == "unknown" else (1.0 - final_fake_prob),
             frames_analyzed=len(frames),
             duration_sec=meta.duration_sec,
             faces_detected=face_count,
+            faces_not_found=not_found_count,
+            faces_failed=failed_count,
             frame_scores=frame_score_list,
             branch_scores=avg_branch,
             heatmap_path=heatmap_path,
@@ -337,9 +430,14 @@ async def _run_video_detection_async(task, job_id: str, video_path: str) -> dict
                 frames_analyzed=result.frames_analyzed,
                 faces_detected=result.faces_detected,
                 raw_output={
-                    "fake_probability":     result.fake_probability,
-                    "real_probability":     result.real_probability,
+                    "fake_probability":      result.fake_probability,
+                    "real_probability":      result.real_probability,
                     "suspicious_timestamps": result.suspicious_timestamps,
+                    "faces_not_found":       result.faces_not_found,
+                    "faces_failed":          result.faces_failed,
+                    "scored_frames_count":   sum(
+                        1 for fs in result.frame_scores if fs.get("score") is not None
+                    ),
                 },
             )
             db.add(db_result)

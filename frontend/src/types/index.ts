@@ -51,8 +51,13 @@ export interface BranchScores {
 
 export interface FrameScore {
   frame: number;
-  score: number;
+  /** null when the frame could not be scored (no face detected or detector failed) */
+  score: number | null;
   timestamp: number;
+  /** Explicit face-detection outcome for this frame */
+  face_status?: "detected" | "not_found" | "failed";
+  /** Number of sliding windows that contributed to this frame's score */
+  window_count?: number;
 }
 
 export interface ChunkScore {
@@ -60,6 +65,15 @@ export interface ChunkScore {
   score: number;
   start: number;
   end: number;
+}
+
+export interface VideoRawOutput {
+  fake_probability?: number;
+  real_probability?: number;
+  suspicious_timestamps?: number[];
+  faces_not_found?: number;
+  faces_failed?: number;
+  scored_frames_count?: number;
 }
 
 export interface DetectionResult {
@@ -73,6 +87,8 @@ export interface DetectionResult {
   duration_sec: number | null;
   frames_analyzed: number | null;
   faces_detected: number | null;
+  /** Present for video and audio results */
+  raw_output: VideoRawOutput | null;
   created_at: string;
 }
 
