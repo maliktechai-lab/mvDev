@@ -10,6 +10,9 @@ interface Props {
 const ACCEPTED = {
   'image/jpeg': [], 'image/png': [], 'image/webp': [], 'image/bmp': [],
   'video/mp4':  [], 'video/webm': [], 'video/avi': [], 'video/quicktime': [],
+  'audio/mpeg': [], 'audio/mp3': [], 'audio/wav': [], 'audio/x-wav': [],
+  'audio/ogg': [], 'audio/flac': [], 'audio/mp4': [], 'audio/x-m4a': [],
+  'audio/aac': [],
 };
 
 const FORMATS = [
@@ -19,18 +22,26 @@ const FORMATS = [
   { ext: 'MP4',  color: '#ff2020' },
   { ext: 'WebM', color: '#facc15' },
   { ext: 'MOV',  color: '#00ff88' },
+  { ext: 'MP3',  color: '#f97316' },
+  { ext: 'WAV',  color: '#06b6d4' },
+  { ext: 'FLAC', color: '#ec4899' },
 ];
 
 export default function UploadZone({ onFileSelected, isAnalyzing }: Props) {
   const [preview, setPreview] = useState<{
-    url: string; type: 'image' | 'video'; name: string; size: number;
+    url: string; type: 'image' | 'video' | 'audio'; name: string; size: number;
   } | null>(null);
 
   const onDrop = useCallback((files: File[]) => {
     const f = files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
-    setPreview({ url, type: f.type.startsWith('video/') ? 'video' : 'image', name: f.name, size: f.size });
+    const type = f.type.startsWith('video/')
+      ? 'video'
+      : f.type.startsWith('audio/') || /\.(mp3|wav|flac|ogg|m4a|aac)$/i.test(f.name)
+      ? 'audio'
+      : 'image';
+    setPreview({ url, type, name: f.name, size: f.size });
     onFileSelected(f);
   }, [onFileSelected]);
 
@@ -144,11 +155,41 @@ export default function UploadZone({ onFileSelected, isAnalyzing }: Props) {
                   filter: 'contrast(1.05)',
                 }}
               />
-            ) : (
+            ) : preview.type === 'video' ? (
               <video
                 src={preview.url} muted
                 style={{ maxHeight: 180, maxWidth: '100%' }}
               />
+            ) : (
+              /* Audio preview */
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
+                padding: '20px 0',
+              }}>
+                {/* Audio waveform icon */}
+                <svg width="64" height="48" viewBox="0 0 64 48" fill="none" style={{ opacity: 0.85 }}>
+                  {[4, 12, 20, 28, 36, 44, 52, 60].map((x, i) => {
+                    const heights = [16, 32, 24, 40, 40, 24, 32, 16];
+                    const h = heights[i];
+                    return (
+                      <rect
+                        key={x}
+                        x={x - 2} y={(48 - h) / 2} width={4} height={h}
+                        rx={2}
+                        fill={['#f97316','#06b6d4','#a78bfa','#f97316','#06b6d4','#a78bfa','#f97316','#06b6d4'][i]}
+                      />
+                    );
+                  })}
+                </svg>
+                <audio
+                  src={preview.url} controls
+                  style={{
+                    width: '100%', maxWidth: 320,
+                    filter: 'invert(1) hue-rotate(180deg)',
+                    opacity: 0.85,
+                  }}
+                />
+              </div>
             )}
             <div style={{ textAlign: 'center' }}>
               <div style={{

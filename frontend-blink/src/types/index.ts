@@ -9,7 +9,7 @@
 
 // ── Media & Status ─────────────────────────────────────────────────────────
 
-export type MediaType = 'image' | 'video';
+export type MediaType = 'image' | 'video' | 'audio';
 export type AnalysisStatus =
   | 'idle'
   | 'uploading'

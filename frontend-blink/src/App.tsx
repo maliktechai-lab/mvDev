@@ -6,6 +6,7 @@ import Hero from './components/Hero';
 import SampleGallery from './components/SampleGallery';
 import AnalyzerSection from './components/AnalyzerSection';
 import HowItWorks from './components/HowItWorks';
+import JobHistory from './components/JobHistory';
 
 // ─── Footer ───────────────────────────────────────────────────
 function Footer() {
@@ -88,6 +89,7 @@ function Footer() {
 // ─── App ──────────────────────────────────────────────────────
 export default function App() {
   const [loaded, setLoaded] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const detectorRef = useRef<HTMLDivElement>(null);
 
   const scrollToDetector = () =>
@@ -99,6 +101,9 @@ export default function App() {
         {!loaded && <Loader onComplete={() => setLoaded(true)} />}
       </AnimatePresence>
 
+      {/* Job history slide-in panel */}
+      <JobHistory open={historyOpen} onClose={() => setHistoryOpen(false)} />
+
       <AnimatePresence>
         {loaded && (
           <motion.div
@@ -107,7 +112,7 @@ export default function App() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, ease: 'easeOut' }}
           >
-            <Header />
+            <Header onHistoryOpen={() => setHistoryOpen(true)} />
             <Hero onScrollToDetector={scrollToDetector} />
             <div style={{ height: 1, background: 'var(--border)' }} />
             <SampleGallery />

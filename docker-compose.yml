@@ -110,11 +110,13 @@ services:
       start_period: 60s
       retries: 3
 
-  # ── React Frontend ─────────────────────────────────────
+  # ── React Frontend (BLINK) ────────────────────────────────
   frontend:
     build:
-      context: ./frontend
-      dockerfile: ../docker/Dockerfile.frontend
+      context: ./frontend-blink
+      dockerfile: ../docker/Dockerfile.frontend-blink
+      args:
+        VITE_API_URL: /api/v1
     container_name: deepguard_frontend
     restart: unless-stopped
     ports:

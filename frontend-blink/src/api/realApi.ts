@@ -257,13 +257,18 @@ export async function analyzeMedia(
   file: File,
   onProgress?: ProgressCallback,
 ): Promise<AnalysisResult> {
-  const mediaType: MediaType = file.type.startsWith('video/') ? 'video' : 'image';
-
-  if (mediaType === 'image') {
-    return analyzeImage(file, onProgress);
-  } else {
+  if (file.type.startsWith('audio/') || isAudioExtension(file.name)) {
+    return analyzeAudio(file, onProgress);
+  }
+  if (file.type.startsWith('video/')) {
     return analyzeVideo(file, onProgress);
   }
+  return analyzeImage(file, onProgress);
+}
+
+/** Returns true for audio file extensions that browsers may not type correctly. */
+function isAudioExtension(filename: string): boolean {
+  return /\.(mp3|wav|flac|ogg|m4a|aac)$/i.test(filename);
 }
 
 // ── Image ──────────────────────────────────────────────────────────────────
@@ -370,6 +375,112 @@ async function analyzeVideo(
   }
 
   throw new AnalysisTimeoutError(job_id);
+}
+
+// ── Audio ──────────────────────────────────────────────────────────────────
+
+async function analyzeAudio(
+  file: File,
+  onProgress?: ProgressCallback,
+): Promise<AnalysisResult> {
+  onProgress?.('Uploading media...', 5);
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const submitRes = await apiClient.post<{ job_id: string; status: string; message: string; poll_url: string }>(
+    '/detect/audio',
+    formData,
+    {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (e: AxiosProgressEvent) => {
+        if (e.total) {
+          const pct = Math.round((e.loaded / e.total) * 40);
+          onProgress?.('Uploading media...', pct);
+        }
+      },
+    },
+  );
+
+  const { job_id } = submitRes.data;
+  onProgress?.('Processing audio in background...', 45);
+
+  // ── Poll until complete ────────────────────────────────────────────────
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let pollCount  = 0;
+
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+    pollCount++;
+
+    const pct = Math.min(90, 45 + pollCount * 3);
+    onProgress?.('Checking status...', pct);
+
+    const jobRes = await apiClient.get<BackendJobResponse>(`/jobs/${job_id}`);
+    const job    = jobRes.data;
+
+    if (job.status === 'completed' && job.result) {
+      onProgress?.('Complete', 100);
+      return mapAudioJobResponse(job, file);
+    }
+
+    if (job.status === 'failed') {
+      throw new Error(job.error_msg ?? 'Audio detection failed on the server.');
+    }
+
+    if (job.status === 'running') {
+      onProgress?.('Analyzing audio waveform & spectrum...', pct);
+    }
+  }
+
+  throw new AnalysisTimeoutError(job_id);
+}
+
+/**
+ * Map a completed audio job → AnalysisResult.
+ */
+export function mapAudioJobResponse(
+  job: BackendJobResponse,
+  file: File,
+): AnalysisResult {
+  const r = job.result!;
+  const raw = r.raw_output as Record<string, unknown> | null | undefined;
+
+  const branchScores = mapBranchScores(
+    r.branch_scores as Record<string, number> | null | undefined,
+  );
+
+  const warnings: string[] = [
+    'Results are model-based estimates, not forensic proof.',
+    'Audio analysis is experimental — checkpoint may not be trained.',
+  ];
+  const randomWeightsWarning = !!(raw?.['random_weights_warning']);
+  if (randomWeightsWarning) {
+    warnings.unshift('Development mode: model weights are random — results are meaningless.');
+  }
+
+  const fakeProbability = (raw?.['fake_probability'] as number | null | undefined) ?? null;
+  const realProbability = (raw?.['real_probability'] as number | null | undefined) ?? null;
+
+  return {
+    id:            job.id,
+    mediaType:     'audio' as MediaType,
+    label:         mapVerdict(r.verdict),
+    confidence:    r.confidence,
+    branchScores,
+    heatmapUrl:    r.heatmap_url ?? undefined,
+    processingTime: job.ended_at && job.started_at
+      ? new Date(job.ended_at).getTime() - new Date(job.started_at).getTime()
+      : 0,
+    warnings,
+    metadata: {
+      filename:  file.name,
+      fileSize:  file.size,
+    },
+    fakeProbability,
+    realProbability,
+    randomWeightsWarning,
+  };
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

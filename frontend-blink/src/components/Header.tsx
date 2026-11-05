@@ -61,7 +61,7 @@ function MagneticLink({ label, href }: { label: string; href: string }) {
   );
 }
 
-export default function Header() {
+export default function Header({ onHistoryOpen }: { onHistoryOpen?: () => void }) {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
   const [scrollPct, setScrollPct] = useState(0);
@@ -147,6 +147,39 @@ export default function Header() {
                 LIVE
               </span>
             </div>
+
+            {/* History button */}
+            <motion.button
+              onClick={onHistoryOpen}
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 16px',
+                background: 'none',
+                color: 'var(--grey-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 0,
+                fontFamily: 'JetBrains Mono',
+                fontSize: 10,
+                letterSpacing: '0.1em',
+                textTransform: 'uppercase',
+                cursor: 'pointer',
+                transition: 'color 0.2s, border-color 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.color = 'var(--white)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--grey-2)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.color = 'var(--grey-2)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+              }}
+            >
+              History
+            </motion.button>
 
             <motion.a
               href="#detector"
