@@ -1,73 +1,87 @@
 # DeepGuard-Image Training Configuration
 # All components trained from scratch — no pretrained weights.
 #
-# Run with:
+# GPU run (fast — recommended):
 #   python backend/training/train_image.py \
-#     --dataset_root ml/datasets/processed \
-#     --epochs 50 --batch_size 32 --device cuda
+#     --dataset_root data/processed/cifake \
+#     --checkpoint_dir ml/checkpoints \
+#     --device cuda --epochs 50 --batch_size 64
+#
+# CPU run (slow but works):
+#   python backend/training/train_image.py \
+#     --dataset_root data/processed/cifake \
+#     --checkpoint_dir ml/checkpoints \
+#     --device cpu --epochs 30 --batch_size 32 --workers 2
+#
+# Resume after interruption:
+#   python backend/training/train_image.py \
+#     --dataset_root data/processed/cifake \
+#     --checkpoint_dir ml/checkpoints \
+#     --resume ml/checkpoints/deepguard_image_best.pth
 
 experiment_name: deepguard_image_v1_scratch
 description: >
-  Custom 3-branch deepfake detector trained entirely from scratch.
-  Branch 1 — Spatial:    Custom deep CNN (depthwise-sep + SE + residual, ~5.2M params)
+  Custom 3-branch deepfake detector trained entirely from scratch on CIFAKE.
+  Branch 1 — Spatial:    Deep CNN (depthwise-sep + SE + residual, ~5.2M params)
   Branch 2 — Frequency:  FFT + DCT CNN (frequency artifact detection)
-  Branch 3 — Attention:  Cross-attention between spatial and frequency features
+  Branch 3 — Attention:  Cross-attention between spatial and frequency
 
 # Dataset
 dataset:
-  root: ml/datasets/processed
-  max_per_class: null           # null = use all; e.g. 5000 for quick smoke tests
+  root: data/processed/cifake
+  # null = use all 90k train / 10k val / 20k test
+  # e.g. 5000 for a quick 10-minute smoke run
+  max_per_class: null
 
-# Model — no pretrained backbone
+# Model
 model:
-  pretrained: false             # always false — this is a from-scratch model
+  pretrained: false
   branch_dim: 512
-  spatial_stages: 5             # stem + 5 stages in SpatialBranch
   attention_heads: 8
 
-# Training
+# Training — sensible for CPU (4 cores, ~14 GB RAM)
 training:
-  epochs: 50
-  batch_size: 32
-  num_workers: 4
+  epochs: 30                    # ≈ 20 h on CPU / ≈ 2 h on GPU (single A100)
+  batch_size: 32                # 32 fits comfortably in ~4 GB RAM on CPU
+  num_workers: 2                # 2 workers on 4-core CPU leaves cores for training
   learning_rate: 0.0003
   weight_decay: 0.0001
   label_smoothing: 0.1
-  warmup_epochs: 5              # Linear LR warmup before cosine decay
-  patience: 10                  # Early stopping patience (epochs without val AUC improvement)
-  mixed_precision: true         # AMP (GPU only, ignored on CPU)
+  warmup_epochs: 3
+  patience: 8                   # stop early if val AUC doesn't improve for 8 epochs
+  mixed_precision: false        # AMP only applies when device=cuda
 
-# Optimizer — unified LR (no backbone/head split needed for scratch model)
+# Optimizer
 optimizer:
   type: AdamW
   betas: [0.9, 0.999]
 
-# Scheduler — linear warmup → cosine decay
+# Scheduler: linear warmup → cosine decay
 scheduler:
   type: cosine_with_warmup
-  warmup_epochs: 5
+  warmup_epochs: 3
   eta_min: 0.000001
 
 # Loss
 loss:
   main_weight: 1.0
-  aux_weight: 0.3               # Per-branch auxiliary loss weight (deep supervision)
+  aux_weight: 0.3               # deep supervision: each branch also supervised directly
 
-# Augmentation (training only)
+# Augmentation (training split only)
 augmentation:
   random_horizontal_flip: 0.5
   color_jitter: true
-  gaussian_blur: 0.2
-  random_erasing: 0.1
-  random_rotation: 10
+  gaussian_blur_prob: 0.25
+  random_erasing_prob: 0.1
+  random_rotation_deg: 10
 
 # Checkpointing
 checkpoint:
   dir: ml/checkpoints
-  canonical_name: deepguard_image.pth   # name the registry looks for
+  canonical_name: deepguard_image.pth   # the name backend/core/config.py looks for
   save_every_n_epochs: 5
 
-# Evaluation metrics
+# Evaluation
 evaluation:
   threshold: 0.5
   metrics:

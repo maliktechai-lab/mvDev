@@ -4,8 +4,8 @@ GradCAM Heatmap Generator
 Generates class activation maps overlaid on the original image
 to explain which regions the model focused on.
 
-Uses the pytorch-grad-cam library targeting EfficientNet-B4's
-last convolutional layer in the spatial branch.
+Uses pytorch-grad-cam targeting the last ResBlock of the spatial branch's
+stage5 — the highest-level convolutional features before global pooling.
 """
 
 from __future__ import annotations
@@ -30,16 +30,18 @@ class GradCAMGenerator:
     """
     Generates GradCAM heatmaps for the DeepGuard-Image model.
 
-    The target layer is the last conv block of EfficientNet-B4 in the spatial branch.
-    This gives the most semantically meaningful activations.
+    Target layer: last ResBlock of spatial_branch.stage5 — the deepest
+    convolutional representation before global average pooling.
     """
 
     def __init__(self, model, device: str = "cpu"):
         self.model  = model
         self.device = device
 
-        # Target layer: last block of EfficientNet-B4 backbone
-        target_layer = model.spatial_branch.backbone.blocks[-1]
+        # Target layer: last conv2 of the final ResBlock in stage5
+        # This is the deepest spatial feature map (7×7 @ 512ch) before pooling.
+        target_layer = model.spatial_branch.stage5[-1].conv2.conv
+
         self.cam = GradCAM(
             model=self._wrapped_model(),
             target_layers=[target_layer],
@@ -47,7 +49,7 @@ class GradCAMGenerator:
 
     def _wrapped_model(self):
         """
-        GradCAM needs a model that returns raw logits as a tensor.
+        GradCAM needs a model that returns raw logits as a plain tensor.
         Wrap DeepGuardImageModel to return only main logits.
         """
 
@@ -110,8 +112,8 @@ class GradCAMGenerator:
         heatmap_dir = Path(settings.HEATMAP_DIR)
         heatmap_dir.mkdir(parents=True, exist_ok=True)
 
-        filename   = f"{uuid.uuid4().hex}.png"
-        filepath   = heatmap_dir / filename
+        filename = f"{uuid.uuid4().hex}.png"
+        filepath = heatmap_dir / filename
 
         img = Image.fromarray(heatmap.astype(np.uint8))
         img.save(str(filepath), format="PNG", optimize=True)
