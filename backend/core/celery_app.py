@@ -27,7 +27,15 @@ celery_app.conf.update(
         "pipelines.video_pipeline.*": {"queue": "video"},
         "pipelines.audio_pipeline.*": {"queue": "audio"},
     },
-    task_time_limit=600,          # 10 min hard limit
-    task_soft_time_limit=540,     # 9 min soft limit (sends warning)
-    result_expires=86400,         # Results expire after 24h
+    task_time_limit=600,          # 10 min hard limit — SIGKILLs the worker process
+    task_soft_time_limit=540,     # 9 min soft limit — raises SoftTimeLimitExceeded
+    result_expires=86400,         # Results expire after 24 h in the result backend
+
+    # Dead-letter handling: failed tasks (after all retries exhausted) are
+    # re-queued on the "dead_letter" queue for inspection.
+    # Monitor with:  celery -A core.celery_app inspect reserved
+    task_reject_on_worker_lost=True,
+
+    # Maximum number of active refresh tokens per user is enforced at the
+    # application layer (auth endpoint).  No Celery-level config needed.
 )

@@ -6,9 +6,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from core.config import settings
 from core.logging import setup_logging
+from core.rate_limit import limiter
 from db.database import create_tables
 from api.v1.router import api_router
 
@@ -20,6 +23,13 @@ async def lifespan(app: FastAPI):
     # Startup
     setup_logging()
     logger.info(f"Starting {settings.APP_NAME} — env={settings.APP_ENV}")
+
+    # Fail fast in production if any dangerous configuration is detected.
+    try:
+        settings.validate_production()
+    except RuntimeError as exc:
+        logger.critical(str(exc))
+        raise
 
     # Ensure storage directories exist
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -53,6 +63,10 @@ app = FastAPI(
     openapi_url="/api/openapi.json" if settings.DEBUG else None,
     lifespan=lifespan,
 )
+
+# ── Rate limiter ───────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # ── Middleware ─────────────────────────────────────────────────────────────

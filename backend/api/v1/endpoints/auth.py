@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -11,6 +11,7 @@ from core.security import (
     decode_token, hash_token, get_current_user,
 )
 from core.config import settings
+from core.rate_limit import limiter, check_account_lockout, record_login_failure, clear_login_failures
 from api.v1.schemas.auth import (
     UserRegister, UserResponse, LoginRequest,
     TokenResponse, RefreshRequest, PasswordChangeRequest,
@@ -48,31 +49,66 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
 # ── Login ──────────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
-    # TODO(security): No rate limiting is applied to this endpoint.
-    # Brute-force attacks (credential stuffing, password spraying) are possible.
-    # Mitigate by adding one of:
-    #   - slowapi (pip install slowapi) with a Redis backend for per-IP limits
-    #   - A reverse-proxy-level rate limit in Nginx (limit_req_zone)
-    #   - Account lockout after N consecutive failures (requires a failed_attempts
-    #     counter column on the User model and a cooldown period)
-    # See DESIGN.md § "Security — Brute-force protection" for full discussion.
+@limiter.limit("5/minute")
+async def login(request: Request, payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Authenticate and issue a JWT access + refresh token pair.
+
+    Rate limiting:
+      - Layer 1 (IP): 5 requests/minute per source IP via slowapi/Redis.
+        Exceeding this returns HTTP 429 before any DB query is made.
+      - Layer 2 (account): after 5 consecutive failures the account is locked
+        for 15 minutes.  Counter resets on successful login.
+
+    Both layers return the same generic error message so attackers cannot
+    distinguish "account exists but locked" from "wrong password".
+    """
+    _GENERIC_ERROR = "Invalid email or password"
+
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
+    # Check lockout before password verification to prevent timing oracle.
+    await check_account_lockout(user)
+
     if not user or not verify_password(payload.password, user.hashed_password):
+        # Record the failure (no-op if user is None).
+        await record_login_failure(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            detail=_GENERIC_ERROR,
         )
+
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+        # Do not reveal the distinction between disabled and bad credentials.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_GENERIC_ERROR,
+        )
+
+    # Successful login — clear any accumulated failure counters.
+    await clear_login_failures(db, user)
 
     access_token  = create_access_token(str(user.id), {"email": user.email, "username": user.username})
     refresh_token = create_refresh_token(str(user.id))
 
     # Store hashed refresh token in DB
     expires_at = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+
+    # Enforce a per-user limit on active refresh tokens (max 10 concurrent sessions).
+    # Revoke the oldest tokens if the limit is exceeded.
+    _MAX_ACTIVE_TOKENS = 10
+    active_tokens_result = await db.execute(
+        select(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked == False)
+        .order_by(RefreshToken.created_at)
+    )
+    active_tokens = active_tokens_result.scalars().all()
+    if len(active_tokens) >= _MAX_ACTIVE_TOKENS:
+        # Revoke the oldest ones to stay within the limit
+        for old_token in active_tokens[:len(active_tokens) - _MAX_ACTIVE_TOKENS + 1]:
+            old_token.revoked = True
+
     db_token = RefreshToken(
         user_id=user.id,
         token_hash=hash_token(refresh_token),
@@ -160,3 +196,12 @@ async def change_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
 
     current_user.hashed_password = hash_password(payload.new_password)
+
+    # Revoke ALL active refresh tokens for this user so any stolen token
+    # cannot be used after a password change.
+    from sqlalchemy import update as sa_update
+    await db.execute(
+        sa_update(RefreshToken)
+        .where(RefreshToken.user_id == current_user.id, RefreshToken.revoked == False)
+        .values(revoked=True)
+    )

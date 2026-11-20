@@ -11,10 +11,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # Not exposed to host in production; internal network only.
-    # Expose only for local development debugging:
-    ports:
-      - "5432:5432"
+    # SECURITY: No ports exposed to the host.
+    # PostgreSQL is only reachable on the internal Docker network.
+    # Expose 5432 locally only when needed for debugging:
+    #   docker-compose -f docker-compose.yml -f docker-compose.debug.yml up
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -29,9 +29,10 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
-    # Expose only for local development debugging:
-    ports:
-      - "6379:6379"
+    # SECURITY: No ports exposed to the host.
+    # Redis is only reachable on the internal Docker network.
+    # Expose 6379 locally only when needed for debugging:
+    #   docker-compose -f docker-compose.yml -f docker-compose.debug.yml up
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -51,14 +52,17 @@ services:
       - ./ml/checkpoints:/app/checkpoints
       - uploads_data:/app/uploads
       - heatmaps_data:/app/heatmaps
-    ports:
-      - "8000:8000"
+    # SECURITY: No direct host port mapping.
+    # All traffic must flow through Nginx (port 80/443).
+    # The backend is reachable at http://backend:8000 within the Docker network.
+    expose:
+      - "8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Inherits HEALTHCHECK from Dockerfile.backend (HTTP ping to :8000) — correct for this service.
+    # HEALTHCHECK is provided by Dockerfile.backend (HTTP ping to :8000).
 
   # ── Celery Worker ──────────────────────────────────────
   celery_worker:
@@ -79,8 +83,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Override the shared Dockerfile HEALTHCHECK.
-    # The worker has no HTTP server — use celery inspect ping instead.
     healthcheck:
       test: ["CMD-SHELL", "celery -A core.celery_app inspect ping --timeout 5 2>&1 | grep -q pong || exit 1"]
       interval: 30s
@@ -89,6 +91,11 @@ services:
       retries: 3
 
   # ── Celery Flower (monitoring) ─────────────────────────
+  # SECURITY: Flower is NOT exposed to the public internet.
+  # Access it via an SSH tunnel:
+  #   ssh -L 5555:localhost:5555 your-server
+  # then open http://localhost:5555 in your browser.
+  # Basic-auth credentials are set via FLOWER_BASIC_AUTH in .env.
   flower:
     build:
       context: ./backend
@@ -96,13 +103,13 @@ services:
     container_name: deepguard_flower
     restart: unless-stopped
     env_file: .env
-    command: celery -A core.celery_app flower --port=5555
-    ports:
-      - "5555:5555"
+    command: >
+      celery -A core.celery_app flower --port=5555
+      --basic-auth=${FLOWER_BASIC_AUTH}
+    expose:
+      - "5555"
     depends_on:
       - redis
-    # Override the shared Dockerfile HEALTHCHECK.
-    # Flower serves on :5555, not :8000. Use its built-in /healthcheck endpoint.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5555/healthcheck')\" || exit 1"]
       interval: 30s
@@ -110,7 +117,9 @@ services:
       start_period: 60s
       retries: 3
 
-  # ── React Frontend (BLINK) ────────────────────────────────
+  # ── React Frontend (BLINK) ─────────────────────────────
+  # SECURITY: No direct host port mapping.
+  # All traffic must flow through Nginx (port 80/443).
   frontend:
     build:
       context: ./frontend-blink
@@ -119,12 +128,13 @@ services:
         VITE_API_URL: /api/v1
     container_name: deepguard_frontend
     restart: unless-stopped
-    ports:
-      - "3000:80"
+    expose:
+      - "80"
     depends_on:
       - backend
 
   # ── Nginx Reverse Proxy ────────────────────────────────
+  # ONLY public-facing service. Terminates TLS in production.
   nginx:
     image: nginx:1.25-alpine
     container_name: deepguard_nginx
@@ -134,6 +144,8 @@ services:
       - heatmaps_data:/app/heatmaps:ro
     ports:
       - "80:80"
+      # Uncomment for HTTPS (requires TLS certs volume):
+      # - "443:443"
     depends_on:
       - backend
       - frontend

@@ -71,6 +71,9 @@ class ImageDetectionResponse(BaseModel):
     heatmap_url:            str | None
     processing_ms:          int
     random_weights_warning: bool = False
+    # Explicit model provenance block — always present so callers can determine
+    # whether this result came from a trained model or random weights.
+    model_status:           dict = {}
 
 
 # ── Endpoint ───────────────────────────────────────────────────────────────
@@ -183,6 +186,10 @@ async def detect_image(
         # Determine whether model is running on random (untrained) weights
         random_weights_warning = getattr(get_image_model(), "random_weights", False)
 
+        # Build model provenance block
+        from core.model_meta import image_model_status_block
+        model_status = image_model_status_block()
+
         # Save result to DB
         db_result = DetectionResult(
             job_id=job.id,
@@ -228,6 +235,7 @@ async def detect_image(
             heatmap_url=result.heatmap_url,
             processing_ms=elapsed_ms,
             random_weights_warning=random_weights_warning,
+            model_status=model_status,
         )
 
     except Exception as e:

@@ -47,6 +47,10 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # Brute-force / account-lockout tracking
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until          = Column(DateTime(timezone=True), nullable=True)
+
     # Relationships
     jobs = relationship("DetectionJob", back_populates="user", cascade="all, delete-orphan")
 

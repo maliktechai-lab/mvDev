@@ -41,48 +41,57 @@ User → Nginx → FastAPI (JWT auth) → ML Pipelines → PostgreSQL
 
 ```bash
 git clone <repo-url>
-cd deepguard
+cd mvDev
 cp .env.example .env
-# Edit .env — change SECRET_KEY and JWT_SECRET_KEY to long random strings
+# Edit .env — set SECRET_KEY, JWT_SECRET_KEY, and POSTGRES_PASSWORD to strong random values:
+#   python -c "import secrets; print(secrets.token_hex(64))"
 ```
 
 ### 2. Start all services
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
+
+> **Note:** This project uses `docker compose` (the Docker CLI plugin, included
+> with Docker ≥ 23). If you have an older Docker that only ships the standalone
+> binary, replace every `docker compose` with `docker-compose`.
 
 Services:
 
-| Service | URL |
-|---|---|
-| Frontend | http://localhost:3000 |
-| Backend API | http://localhost:8000 |
-| API Docs (dev) | http://localhost:8000/api/docs |
-| Celery Flower | http://localhost:5555 |
-| PostgreSQL | localhost:5432 |
-| Redis | localhost:6379 |
+| Service | URL | Notes |
+|---|---|---|
+| Frontend | http://localhost | Served through Nginx |
+| Backend API | http://localhost/api/v1 | Proxied through Nginx |
+| API Docs (dev) | http://localhost/api/docs | Only available when `DEBUG=true` |
+| Celery Flower | _not publicly exposed_ | Access via SSH tunnel: `ssh -L 5555:localhost:5555 your-server` |
+| PostgreSQL | _internal only_ | Use debug override to expose locally |
+| Redis | _internal only_ | Use debug override to expose locally |
+
+**Local debugging** (exposes Postgres, Redis, backend, and Flower on the host):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+```
 
 ### 3. Run database migrations
 
 ```bash
-docker-compose exec backend alembic upgrade head
+docker compose exec backend alembic upgrade head
 ```
 
 ### 4. Check service health
 
 ```bash
-# Application health (DB + Redis)
-curl http://localhost:8000/api/v1/health
+# Application health (DB + Redis) — through Nginx
+curl http://localhost/api/v1/health
 
 # Model checkpoint readiness
-curl http://localhost:8000/api/v1/health/models
+curl http://localhost/api/v1/health/models
 
 # Minimal liveness ping
-curl http://localhost:8000/api/v1/health/ping
+curl http://localhost/api/v1/health/ping
 ```
-
----
 
 ## Local Development (without Docker)
 
@@ -90,15 +99,17 @@ curl http://localhost:8000/api/v1/health/ping
 
 ```bash
 # Python 3.11+ required
-cd deepguard
+cd mvDev
 python -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
 
-# Point .env at local services
-# DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/deepguard
-# REDIS_URL=redis://localhost:6379/0
-# IMAGE_MODEL_PATH=./checkpoints/deepguard_image.pth  (see Model Paths below)
+# Copy and configure .env for local development
+cp .env.example .env
+# Point DATABASE_URL and REDIS_URL at locally-running services:
+#   DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/deepguard
+#   REDIS_URL=redis://localhost:6379/0
+#   IMAGE_MODEL_PATH=./checkpoints/deepguard_image.pth
 
 cd backend
 uvicorn main:app --reload --port 8000
@@ -106,10 +117,12 @@ uvicorn main:app --reload --port 8000
 
 ### Frontend
 
+The deployed frontend is `frontend-blink`.
+
 ```bash
-cd frontend
+cd frontend-blink
 npm install
-npm run dev          # http://localhost:3000
+npm run dev          # http://localhost:5173
 npm run build        # production build check
 ```
 
@@ -223,12 +236,12 @@ The checkpoint is volume-mounted into the container at `/app/checkpoints/`. Afte
 
 ```bash
 # Restart the backend to load the new weights
-docker-compose restart backend celery_worker
+docker compose restart backend celery_worker
 ```
 
 Verify the checkpoint loaded:
 ```bash
-curl http://localhost:8000/api/v1/health/models
+curl http://localhost/api/v1/health/models
 # "overall": "partial"  → image ready, video/audio still unavailable
 ```
 
@@ -242,7 +255,7 @@ scp gpu-machine:/path/to/deepguard/ml/checkpoints/deepguard_image.pth \
     ml/checkpoints/deepguard_image.pth
 
 # Then restart services
-docker-compose restart backend celery_worker
+docker compose restart backend celery_worker
 ```
 
 ---

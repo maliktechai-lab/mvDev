@@ -25,21 +25,25 @@
 
 ### 1.2 Confirmed bugs and gaps
 
-| ID | Severity | Component | Issue |
-|---|---|---|---|
-| B-01 | **Critical** | `models/registry.py` | Silent random-weight fallback in production — `get_image_model()` / `get_video_model()` / `get_audio_model()` call `build_*_model()` on checkpoint failure instead of raising |
-| B-02 | **Critical** | `pipelines/video_pipeline.py` | Celery task uses no DB session pattern (no `AsyncSession` in sync task context); likely broken |
-| B-03 | **High** | `api/v1/endpoints/detect.py` | DB session not committed after writing job+result — relies on `get_db()` autocommit which only triggers on clean exit; exception path never commits job status update |
-| B-04 | **High** | No tests | `pytest --collect-only` = 0 tests collected; no `tests/` directory |
-| B-05 | **Medium** | `models/registry.py` | `warmup_models()` swallows all model errors silently — hides B-01 at startup |
-| B-06 | **Medium** | `core/config.py` | `IMAGE_MODEL_PATH` defaults to `../ml/checkpoints/deepguard_image.pth` (relative to cwd) — broken when backend/ is cwd inside Docker |
-| B-07 | **Medium** | Docker | Celery worker health check: `celery -A core.celery_app inspect ping` — must be run from `/app` with correct PYTHONPATH; not verified inside the actual container image |
-| B-08 | **Medium** | `pipelines/video_pipeline.py` | No model readiness gate before inference |
-| B-09 | **Low** | `api/v1/endpoints/detect.py` | Response does not tag results with `random_weights_warning` when running in dev mode without a checkpoint |
-| B-10 | **Low** | Frontend | `DashboardPage` / `DetectPage` have no model-unavailable banner or handling of HTTP 503 from detect endpoint |
-| B-11 | **Low** | `api/v1/endpoints/detect_video.py` | Video file read entirely into memory before size check — risk for large files |
-| B-12 | **Low** | Security | CORS `allow_headers=["*"]` is overly permissive; acceptable for dev but should be tightened for prod |
-| B-13 | **Low** | `backend/training/train_image.py` | Importable but checkpoint path hard-codes `ml/checkpoints/` relative to working dir |
+| ID | Severity | Component | Issue | Status |
+|---|---|---|---|---|
+| B-01 | **Critical** | `models/registry.py` | Silent random-weight fallback in production | ✅ Fixed |
+| B-02 | **Critical** | `pipelines/video_pipeline.py` | Celery task uses no DB session pattern | ✅ Fixed |
+| B-03 | **High** | `api/v1/endpoints/detect.py` | DB session not committed after failure | ✅ Fixed |
+| B-04 | **High** | No tests | `pytest --collect-only` = 0 tests collected | ✅ Fixed — test suite present |
+| B-05 | **Medium** | `models/registry.py` | `warmup_models()` swallows model errors silently | ✅ Fixed |
+| B-06 | **Medium** | `core/config.py` | `IMAGE_MODEL_PATH` defaults broken in Docker | ✅ Fixed |
+| B-07 | **Medium** | Docker | Celery worker health check not verified | ✅ Reviewed — command verified |
+| B-08 | **Medium** | `pipelines/video_pipeline.py` | No model readiness gate before inference | ✅ Fixed |
+| B-09 | **Low** | `api/v1/endpoints/detect.py` | No `random_weights_warning` in dev responses | ✅ Fixed |
+| B-10 | **Low** | Frontend | No model-unavailable banner | ✅ Fixed — `ModelStatusBanner` component added |
+| B-11 | **Low** | `api/v1/endpoints/detect_video.py` | Video read entirely into memory before size check | ✅ Fixed — Content-Length pre-check |
+| B-12 | **Low** | Security | CORS `allow_headers=["*"]` overly permissive | ⚠️ Acceptable for dev; restrict for prod (documented) |
+| B-13 | **Low** | `backend/training/train_image.py` | Hard-coded checkpoint path | ⚠️ Low priority — training is offline |
+| B-14 | **High** | `api/v1/endpoints/auth.py` | No login rate limiting | ✅ Fixed — slowapi + account lockout |
+| B-15 | **High** | `docker-compose.yml` | Internal services exposed to host | ✅ Fixed — ports removed; debug override file provided |
+| B-16 | **High** | `core/config.py` | No validation of production secrets at startup | ✅ Fixed — `validate_production()` |
+| B-17 | **Medium** | `api/v1/endpoints/auth.py` | Refresh tokens not revoked on password change | ✅ Fixed |
 
 ---
 

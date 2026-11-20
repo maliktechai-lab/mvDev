@@ -1,0 +1,267 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ── Backend jobs ───────────────────────────────────────────────────────────
+jobs:
+
+  backend-lint:
+    name: "Backend — lint (ruff)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff==0.4.4
+      - name: Run ruff
+        run: ruff check backend/
+        # Non-zero exit fails the job; fix hints are shown in the annotation.
+
+  backend-typecheck:
+    name: "Backend — type check (mypy)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Install only the packages needed for type-checking (not torch/cv2)
+          pip install \
+            fastapi==0.111.0 \
+            pydantic==2.7.1 \
+            pydantic-settings==2.2.1 \
+            sqlalchemy==2.0.30 \
+            alembic==1.13.1 \
+            python-jose[cryptography]==3.3.0 \
+            passlib[bcrypt]==1.7.4 \
+            loguru==0.7.2 \
+            slowapi==0.1.9 \
+            mypy==1.10.0 \
+            types-passlib \
+            types-python-jose
+      - name: Run mypy (non-ML modules)
+        run: |
+          mypy backend/core/ backend/api/ backend/db/ \
+            --ignore-missing-imports \
+            --no-strict-optional \
+            --python-version 3.11
+
+  backend-import-check:
+    name: "Backend — import smoke test"
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-test-secret-key-not-for-production
+      JWT_SECRET_KEY: ci-test-jwt-secret-key-not-for-production
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/testdb
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      APP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Install all backend deps (torch CPU wheels for speed)
+          pip install -r backend/requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Check all modules import without error
+        run: |
+          cd backend
+          python -c "import main; print('main.py OK')"
+          python -c "from api.v1.router import api_router; print('router OK')"
+          python -c "from core.config import settings; print('config OK')"
+          python -c "from core.security import hash_password; print('security OK')"
+          python -c "from core.rate_limit import limiter; print('rate_limit OK')"
+
+  backend-tests:
+    name: "Backend — pytest"
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-test-secret-key-not-for-production
+      JWT_SECRET_KEY: ci-test-jwt-secret-key-not-for-production
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/testdb
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      APP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  # ── Frontend jobs ──────────────────────────────────────────────────────
+
+  frontend-typecheck:
+    name: "Frontend — TypeScript check"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-blink
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-blink/package-lock.json
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+  frontend-lint:
+    name: "Frontend — lint (oxlint)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-blink
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-blink/package-lock.json
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+      - name: Run oxlint
+        run: npm run lint
+
+  frontend-build:
+    name: "Frontend — production build"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-blink
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-blink/package-lock.json
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+      - name: Build
+        run: npm run build
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend-blink/dist/
+          retention-days: 7
+
+  # ── Infrastructure jobs ────────────────────────────────────────────────
+
+  docker-compose-validate:
+    name: "Docker Compose — config validation"
+    runs-on: ubuntu-latest
+    env:
+      # Minimal env so docker-compose config can interpolate variables
+      SECRET_KEY: ci-placeholder
+      JWT_SECRET_KEY: ci-placeholder
+      DATABASE_URL: postgresql+asyncpg://user:pass@postgres:5432/deepguard
+      POSTGRES_DB: deepguard
+      POSTGRES_USER: deepguard_user
+      POSTGRES_PASSWORD: ci-placeholder
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      FLOWER_BASIC_AUTH: admin:ci-placeholder
+      APP_ENV: development
+      DEBUG: "false"
+      ALLOWED_ORIGINS: http://localhost:3000
+      IMAGE_MODEL_PATH: ./checkpoints/deepguard_image.pth
+      VIDEO_MODEL_PATH: ./checkpoints/deepguard_video.pth
+      AUDIO_MODEL_PATH: ./checkpoints/deepguard_audio.pth
+      MODEL_DIR: ./checkpoints
+      DEVICE: cpu
+      UPLOAD_DIR: ./uploads
+      HEATMAP_DIR: ./heatmaps
+      MAX_IMAGE_SIZE_MB: "10"
+      MAX_VIDEO_SIZE_MB: "500"
+      MAX_AUDIO_SIZE_MB: "50"
+      IMAGE_CONFIDENCE_THRESHOLD: "0.5"
+      VIDEO_FRAMES_PER_SEC: "1"
+      AUDIO_CHUNK_DURATION_SEC: "3"
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+  dependency-audit:
+    name: "Security — dependency audit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit Python dependencies
+        # pip-audit exits non-zero if vulnerabilities are found.
+        # Use --ignore-vuln for known accepted issues with justification.
+        run: pip-audit -r backend/requirements.txt --skip-editable || true
+        # `|| true` lets CI pass with a warning until all vulns are triaged.
+        # Remove `|| true` once you have confirmed all findings are low-risk or fixed.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-blink/package-lock.json
+      - name: Install npm dependencies
+        run: npm ci --frozen-lockfile
+        working-directory: frontend-blink
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high || true
+        working-directory: frontend-blink
+
+  secret-scan:
+    name: "Security — secret scanning (gitleaks)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for gitleaks
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+        # continue-on-error: once you've confirmed no real secrets are present,
+        # remove this line so gitleaks failures block the merge.

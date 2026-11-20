@@ -1,7 +1,26 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import field_validator
 from typing import List
+
+
+# ── Weak / example secrets that must never be used in production ───────────
+_PLACEHOLDER_SECRETS = {
+    "change-this-to-a-very-long-random-secret-key-in-production",
+    "change-this-jwt-secret-key-too",
+    "secret",
+    "changeme",
+    "",
+}
+
+_WEAK_DB_PASSWORDS = {
+    "deepguard_password",
+    "password",
+    "postgres",
+    "changeme",
+    "secret",
+    "",
+}
 
 
 class Settings(BaseSettings):
@@ -58,6 +77,10 @@ class Settings(BaseSettings):
     VIDEO_FRAMES_PER_SEC: int = 1
     AUDIO_CHUNK_DURATION_SEC: int = 3
 
+    # Celery Flower basic-auth (user:password).  Set in .env.
+    # Required in non-development environments.
+    FLOWER_BASIC_AUTH: str = "admin:changeme"
+
     @property
     def allowed_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
@@ -73,6 +96,90 @@ class Settings(BaseSettings):
     @property
     def max_audio_size_bytes(self) -> int:
         return self.MAX_AUDIO_SIZE_MB * 1024 * 1024
+
+    # ── Production-only validators ─────────────────────────────────────────
+    # These run at startup and raise ValueError (which pydantic wraps as a
+    # ValidationError) if any dangerous configuration is detected in production.
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def secret_key_not_placeholder(cls, v: str, info) -> str:
+        # We cannot read APP_ENV from `info` at this stage reliably in all
+        # pydantic-settings versions; validation is enforced in validate_production()
+        # below instead.  Here we just reject the empty string.
+        if not v or not v.strip():
+            raise ValueError("SECRET_KEY must not be empty")
+        return v
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def jwt_key_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("JWT_SECRET_KEY must not be empty")
+        return v
+
+    def validate_production(self) -> None:
+        """
+        Raise RuntimeError if production-unsafe configuration is detected.
+
+        Called explicitly from main.py on startup so that the error message
+        is clear and actionable rather than buried in a Pydantic traceback.
+
+        Rules enforced when APP_ENV == 'production':
+          - SECRET_KEY must not be a known placeholder value.
+          - JWT_SECRET_KEY must not be a known placeholder value.
+          - DEBUG must be False.
+          - POSTGRES_PASSWORD must not be a known weak value.
+          - ALLOWED_ORIGINS must not contain localhost or 127.0.0.1.
+        """
+        if self.APP_ENV == "development":
+            return  # No restrictions in development
+
+        errors: list[str] = []
+
+        if self.SECRET_KEY in _PLACEHOLDER_SECRETS:
+            errors.append(
+                "SECRET_KEY is set to a known placeholder value. "
+                "Generate a strong secret: python -c \"import secrets; print(secrets.token_hex(64))\""
+            )
+
+        if self.JWT_SECRET_KEY in _PLACEHOLDER_SECRETS:
+            errors.append(
+                "JWT_SECRET_KEY is set to a known placeholder value. "
+                "Generate a strong secret: python -c \"import secrets; print(secrets.token_hex(64))\""
+            )
+
+        if self.DEBUG:
+            errors.append(
+                "DEBUG=true is not permitted in production. Set DEBUG=false in .env."
+            )
+
+        if self.POSTGRES_PASSWORD in _WEAK_DB_PASSWORDS:
+            errors.append(
+                "POSTGRES_PASSWORD is set to a known weak value. "
+                "Use a strong random password in production."
+            )
+
+        for origin in self.allowed_origins_list:
+            if "localhost" in origin or "127.0.0.1" in origin:
+                errors.append(
+                    f"ALLOWED_ORIGINS contains a localhost/loopback entry ('{origin}') "
+                    "in production mode. Set ALLOWED_ORIGINS to your real frontend domain."
+                )
+                break  # one message is enough
+
+        if self.FLOWER_BASIC_AUTH in ("admin:changeme", ""):
+            errors.append(
+                "FLOWER_BASIC_AUTH is set to the default placeholder. "
+                "Set a strong user:password in .env (FLOWER_BASIC_AUTH=user:strongpassword)."
+            )
+
+        if errors:
+            bullet_list = "\n".join(f"  • {e}" for e in errors)
+            raise RuntimeError(
+                f"[PRODUCTION] Startup aborted — unsafe configuration detected:\n{bullet_list}\n\n"
+                "Fix all items above before running in production."
+            )
 
 
 @lru_cache()
